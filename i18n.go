@@ -678,18 +678,23 @@ var zhTW = catalog{
 
 要還原時，在這個資料夾開啟 PowerShell 或命令提示字元，執行：
 
-  .\\wslbak.exe restore
+  .\wslbak.exe restore
 
 它會把最新一份通過試還原的備份還原成一個「新的」distro，
 不會覆蓋或移除你已經有的 distro。
 要看這裡有哪些備份，或指定 distro、指定較舊的一份：
 
-  .\\wslbak.exe list
-  .\\wslbak.exe restore -d <distro> <編號>
+  .\wslbak.exe list
+  .\wslbak.exe restore -d <distro> <編號>
+
+只想找回某個檔案的話，先看備份裡有什麼，再把它取回到 distro 裡的一個新資料夾：
+
+  .\wslbak.exe files /home/me
+  .\wslbak.exe restore --path /home/me/notes.md --into /home/me/recovered
 
 沒有 wslbak 也能手動還原（備份檔就是一般的 tar.gz）：
 
-  wsl --import <新名稱> <放虛擬磁碟的資料夾> <distro>\\<編號>.tar.gz --version 2
+  wsl --import <新名稱> <放虛擬磁碟的資料夾> <distro>\<編號>.tar.gz --version 2
 
 手動匯入的 distro 會以 root 登入。要改回來，在它裡面建立 /etc/wsl.conf，內容是：
   [user]
@@ -994,18 +999,24 @@ Each subfolder is one distro. A backup is two files:
 
 To restore, open PowerShell or Command Prompt in this folder and run:
 
-  .\\wslbak.exe restore
+  .\wslbak.exe restore
 
 It restores the newest backup that passed its test restore, as a NEW distro.
 It never overwrites or removes a distro you already have.
 To see what is here, or to pick a distro or an older backup:
 
-  .\\wslbak.exe list
-  .\\wslbak.exe restore -d <distro> <id>
+  .\wslbak.exe list
+  .\wslbak.exe restore -d <distro> <id>
+
+To get back just one file, look at what a backup holds, then bring the file back into a
+new folder inside the distro:
+
+  .\wslbak.exe files /home/me
+  .\wslbak.exe restore --path /home/me/notes.md --into /home/me/recovered
 
 Without wslbak, the same thing by hand (the archive is a plain tar.gz):
 
-  wsl --import <NewName> <FolderForItsDisk> <distro>\\<id>.tar.gz --version 2
+  wsl --import <NewName> <FolderForItsDisk> <distro>\<id>.tar.gz --version 2
 
 After importing by hand the distro logs in as root. To change that, create
 /etc/wsl.conf inside it containing:

@@ -1190,3 +1190,17 @@ func TestStderrLogIgnoresWSLNotes(t *testing.T) {
 		t.Errorf("warnings=%q fatal=%q", warnings, fatal)
 	}
 }
+
+// 放進備份資料夾的說明檔是給人照著打的：指令裡不能出現寫錯的反斜線。
+func TestRestoreReadme(t *testing.T) {
+	for _, c := range []catalog{zhTW, enUS} {
+		if strings.Contains(c.RestoreReadme, `\\`) {
+			t.Errorf("the restore instructions contain a doubled backslash:\n%s", c.RestoreReadme)
+		}
+		for _, want := range []string{`.\wslbak.exe restore`, `.\wslbak.exe files`, "wsl --import", `.tar.gz --version 2`, "--path", "--into"} {
+			if !strings.Contains(c.RestoreReadme, want) {
+				t.Errorf("the restore instructions lack %q", want)
+			}
+		}
+	}
+}
