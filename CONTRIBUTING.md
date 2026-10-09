@@ -28,10 +28,12 @@ Before sending a change, please also run what the `lint` job runs: `gofmt -l .`,
 - **One place may destroy things.** Only `fence.go` may unregister a distro or delete a folder
   recursively, and only for wslbak's own temporary distros. `fence_test.go` reads the source to
   make sure.
-- **Nothing a user types goes on a command line inside the distro.** Such values travel as shell
-  variables in front of a script that is fed on standard input (`withVars`, `shQuote`).
-- **The scripts that run inside the distro** use only the shell and coreutils (no awk, sed, grep,
-  perl, python), never `rm -r`, and end with `main "$@" </dev/null`. A test checks their shape.
+- **Nothing a user types goes on the `wsl.exe` command line or is interpreted by a shell.** Such
+  values travel as shell variables in front of a script that is fed on standard input (`withVars`,
+  `shQuote`); a script may hand one on as a single quoted argument (`"--exclude=$pattern"`), never
+  as text to be parsed.
+- **The scripts that run inside the distro** use only the shell, coreutils and tar (no awk, sed,
+  grep, perl, python), never `rm -r`, and end with `main "$@" </dev/null`. A test checks their shape.
 - **`--dry-run` creates nothing**, not even a log file.
 - **Every message the user sees lives in `i18n.go`**, once in English and once in Traditional
   Chinese. A test checks that neither is missing. Log lines and `--debug` output are English.
