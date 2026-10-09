@@ -423,7 +423,12 @@ if registered "$RESTORED"; then
 	# Identical files are not the whole story: can the restored distro be used?
 	if [ "$DEFAULT_USER" = tester ]; then
 		expect_true "the restored distro logs in as the same ordinary user" [ "$(as_default "$RESTORED" 'id -un')" = tester ]
-		expect_true "the user's private key kept its owner and mode" [ "$(as_default "$RESTORED" 'stat -c "%U %a" "$HOME/.ssh" "$HOME/.ssh/id_test" | tr "\n" " "; cat "$HOME/.ssh/id_test"')" = "tester 700 tester 600 not a real key" ]
+		# Compared with the source rather than with fixed numbers: on Alpine, for one, a new
+		# user's folders carry the setgid bit, so the mode there is 2700 and not 700.
+		KEY_CHECK='stat -c "%U %a" "$HOME/.ssh" "$HOME/.ssh/id_test" | tr "\n" " "; cat "$HOME/.ssh/id_test"'
+		KEY_WAS="$(as_default "$DISTRO" "$KEY_CHECK")"
+		expect_true "the source has the user's private key, readable only by the user" grep -q ' 600 not a real key$' <<<"$KEY_WAS"
+		expect_true "the user's private key kept its owner and mode" [ "$(as_default "$RESTORED" "$KEY_CHECK")" = "$KEY_WAS" ]
 	fi
 	expect_true "a setuid program is still setuid root" [ "$(sh_in "$RESTORED" 'stat -c "%u %a" /wslbak-fixture/setuid-binary')" = "0 4755" ]
 	if [ "$(sh_in "$DISTRO" 'cat /proc/1/comm')" = systemd ]; then
