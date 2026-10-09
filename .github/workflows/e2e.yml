@@ -5,8 +5,9 @@
 #
 # The matrix covers what a single developer PC cannot: other builds of Windows. Windows
 # Server 2022 stands in for Windows 10 (same generation), Server 2025 for Windows 11 24H2.
-# Microsoft Defender's real-time protection cannot be tested here: the runner images put
-# Defender in passive mode, and it could not be switched back on within a job.
+# One job runs with Microsoft Defender's real-time protection on. The runner images switch
+# it off, exclude both drives from scanning and put Defender in passive mode; the job undoes
+# that and proves with the standard anti-virus test file that Defender reacts.
 name: e2e
 
 on:
@@ -23,14 +24,20 @@ permissions:
 
 jobs:
   e2e:
-    name: e2e (${{ matrix.os }})
+    name: e2e (${{ matrix.os }}${{ matrix.defender == 'on' && ', Defender on' || '' }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 75
     continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, windows-2022]
+        include:
+          - os: windows-2025
+            defender: 'off'
+          - os: windows-2022
+            defender: 'off'
+          - os: windows-2025
+            defender: 'on'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -54,6 +61,31 @@ jobs:
           "msiexec exit code: $($install.ExitCode)"
           $env:WSL_UTF8 = '1'
           wsl --version
+      - name: Switch Microsoft Defender's real-time protection on
+        if: matrix.defender == 'on'
+        shell: pwsh
+        run: |
+          Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Advanced Threat Protection' -Name ForceDefenderPassiveMode -ErrorAction SilentlyContinue
+          $p = Get-MpPreference
+          foreach ($x in @($p.ExclusionPath)) { if ($x) { Remove-MpPreference -ExclusionPath $x -ErrorAction SilentlyContinue } }
+          foreach ($x in @($p.ExclusionProcess)) { if ($x) { Remove-MpPreference -ExclusionProcess $x -ErrorAction SilentlyContinue } }
+          foreach ($x in @($p.ExclusionExtension)) { if ($x) { Remove-MpPreference -ExclusionExtension $x -ErrorAction SilentlyContinue } }
+          Set-MpPreference -DisableRealtimeMonitoring $false -DisableBehaviorMonitoring $false -DisableIOAVProtection $false -DisableScriptScanning $false -DisableArchiveScanning $false
+          for ($i = 0; $i -lt 24; $i++) {
+            if ((Get-MpComputerStatus).RealTimeProtectionEnabled) { break }
+            Start-Sleep -Seconds 5
+          }
+          Get-MpComputerStatus | Select-Object AMRunningMode, AntivirusEnabled, RealTimeProtectionEnabled, OnAccessProtectionEnabled, BehaviorMonitorEnabled | Format-List
+          # The standard anti-virus test string, put together here so that this file does not
+          # contain it. If Defender is really watching, the file cannot be read back.
+          $text = [Text.Encoding]::ASCII.GetString([Convert]::FromBase64String('WDVPIVAlQEFQWzRcUFpYNTQoUF4pN0ND' + 'KTd9JEVJQ0FSLVNUQU5EQVJELUFOVElWSVJVUy1URVNULUZJTEUhJEgrSCo='))
+          $file = Join-Path $env:RUNNER_TEMP 'standard-test-file.com'
+          try { [IO.File]::WriteAllText($file, $text) } catch { }
+          Start-Sleep -Seconds 20
+          $readable = $false
+          if (Test-Path $file) { try { $null = [IO.File]::ReadAllText($file); $readable = $true } catch { } }
+          if ($readable) { Write-Error 'Defender did not react to the test file; this job would not be testing anything.'; exit 1 }
+          'Defender reacted to the test file.'
       # The test script runs inside WSL and starts the Windows executables from there,
       # as a user would. This distro only hosts the script; the tests create their own.
       - uses: Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364 # v7.0.0
@@ -74,3 +106,14 @@ jobs:
           GO_WIN="$(cmd.exe /c where go 2>/dev/null | tr -d '\r' | sed -n '1p' || true)"
           if [ -n "$GO_WIN" ]; then export GO="$(wslpath -u "$GO_WIN")"; fi
           bash scripts/e2e.sh
+      - name: What Microsoft Defender made of it
+        if: always() && matrix.defender == 'on'
+        shell: pwsh
+        run: |
+          $status = Get-MpComputerStatus
+          $status | Select-Object RealTimeProtectionEnabled, OnAccessProtectionEnabled | Format-List
+          $found = @(Get-MpThreatDetection | Where-Object { ($_.Resources -join ' ') -notmatch 'standard-test-file' })
+          "Detections other than the test file: $($found.Count)"
+          $found | Format-List ProcessName, Resources, InitialDetectionTime
+          if (-not $status.RealTimeProtectionEnabled) { Write-Error 'Real-time protection was off at the end of the job.'; exit 1 }
+          if ($found.Count -gt 0) { Write-Error 'Defender flagged something during the tests.'; exit 1 }
