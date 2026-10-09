@@ -29,7 +29,7 @@ func backupErrorBrief(err error) string {
 	}
 	switch be.Kind {
 	case failNotGNUTar:
-		return T.BackupNotGNUTar
+		return notGNUTarText(be.Detail == "")
 	case failNotTar, failStart:
 		return T.BriefNoStream
 	case failWrite:
@@ -42,6 +42,14 @@ func backupErrorBrief(err error) string {
 	return T.BriefTar
 }
 
+// notGNUTarText：distro 裡根本沒有 tar，和有 tar 但不是 GNU tar，是兩種要分開說明的情況。
+func notGNUTarText(missing bool) string {
+	if missing {
+		return T.BackupNoTar
+	}
+	return T.BackupNotGNUTar
+}
+
 // backupErrorText 把備份失敗的種類換成給使用者看的說明。
 func backupErrorText(err error) string {
 	var be *backupError
@@ -50,7 +58,7 @@ func backupErrorText(err error) string {
 	}
 	switch be.Kind {
 	case failNotGNUTar:
-		return T.BackupNotGNUTar
+		return notGNUTarText(be.Detail == "")
 	case failNotTar, failStart:
 		return fmt.Sprintf(T.BackupNoStream, be.Detail)
 	case failWrite:

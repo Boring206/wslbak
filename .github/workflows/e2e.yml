@@ -1,0 +1,47 @@
+# End-to-end tests on a Windows runner with WSL2: real backups, test restores and
+# restores of a throwaway distro. Started by hand or once a week; it never blocks a
+# release, because hosted runners differ from a desktop PC (elevated account, no
+# interactive sign-in), and the scheduled-task part may not work there.
+name: e2e
+
+on:
+  workflow_dispatch:
+    inputs:
+      distro:
+        description: Distro to test against (a name from wsl --list --online, or alpine)
+        default: Debian
+  schedule:
+    - cron: '17 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: npm run build
+      # The test script runs inside WSL and starts the Windows executables from there,
+      # as a user would. This distro only hosts the script; the tests create their own.
+      - uses: Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364 # v7.0.0
+        with:
+          distribution: Debian
+          wsl-version: 2
+          additional-packages: nodejs curl
+      - name: Run the end-to-end tests
+        shell: wsl-bash {0}
+        env:
+          E2E_DISTRO: ${{ inputs.distro || 'Debian' }}
+          WSLENV: E2E_DISTRO
+        run: |
+          node --version
+          bash scripts/e2e.sh

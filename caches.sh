@@ -15,7 +15,8 @@ measure() {
 	first=
 	for dir in "$@"; do
 		[ -d "$dir" ] || continue
-		kb=$(du -sxk "$dir" 2>/dev/null | cut -f1)
+		kb=$(du -sxk "$dir" 2>/dev/null)
+		kb=${kb%%[!0-9]*}
 		case $kb in
 		'' | *[!0-9]*) continue ;;
 		esac
@@ -49,7 +50,8 @@ main() {
 
 	# Docker 的資料只回報大小：映像可以重新下載，volume 裡的資料不行。
 	if [ -d /var/lib/docker ]; then
-		kb=$(du -sxk /var/lib/docker 2>/dev/null | cut -f1)
+		kb=$(du -sxk /var/lib/docker 2>/dev/null)
+		kb=${kb%%[!0-9]*}
 		case $kb in
 		'' | *[!0-9]*) ;;
 		*) say "docker	$((kb * 1024))" ;;

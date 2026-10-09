@@ -266,6 +266,8 @@ func cmdDoctor(opts options) int {
 		switch {
 		case err != nil:
 			r.add(checkResult{levelFail, fmt.Sprintf(T.ProbeFailed, d.Name, err), ""})
+		case info.TarKind == "missing":
+			r.add(checkResult{levelFail, fmt.Sprintf(T.DocTarMissing, d.Name), T.BackupNoTar})
 		case info.TarKind != "gnu":
 			r.add(checkResult{levelFail, fmt.Sprintf(T.DocTarBad, d.Name), T.DocTarFix})
 		case !info.HasSHA256:

@@ -483,7 +483,7 @@ func cmdInit(opts options) int {
 		case err != nil:
 			problem = fmt.Sprintf(T.ProbeFailed, d.Name, err)
 		case info.TarKind != "gnu":
-			problem = T.BackupNotGNUTar
+			problem = notGNUTarText(info.TarKind == "missing")
 		}
 		if problem != "" {
 			if len(chosen) == 1 {

@@ -374,6 +374,9 @@ type catalog struct {
 	BriefTar      string
 	BriefSeeLog   string
 
+	BackupNoTar   string
+	DocTarMissing string // 名稱
+
 	// 放在備份資料夾裡的說明檔；兩種語言都會寫進去。
 	RestoreReadme string
 }
@@ -665,6 +668,8 @@ var zhTW = catalog{
 	BriefWrite:          "寫入備份檔失敗（磁碟滿了，或連不到備份資料夾？）。",
 	BriefTar:            "tar 回報錯誤。",
 	BriefSeeLog:         " 細節在那台電腦的紀錄檔裡（wslbak status 也看得到）。",
+	BackupNoTar:         "這個 distro 沒有安裝 tar。請在 distro 裡安裝 GNU tar，例如 openSUSE：zypper install tar；Fedora：dnf install tar；Alpine：apk add tar。",
+	DocTarMissing:       "%s：裡面沒有安裝 tar",
 	RestoreReadme: `這個資料夾是 wslbak 做的 WSL 備份（https://github.com/Boring206/wslbak）
 
 每個子資料夾是一個 distro。一份備份有兩個檔案：
@@ -979,6 +984,8 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	BriefWrite:          "Could not write the backup file (disk full, or the backup folder unreachable?).",
 	BriefTar:            "tar reported an error.",
 	BriefSeeLog:         " Details are in the log file on that PC (wslbak status shows them too).",
+	BackupNoTar:         "This distro has no tar installed. Install GNU tar inside it, for example zypper install tar on openSUSE, dnf install tar on Fedora, apk add tar on Alpine.",
+	DocTarMissing:       "%s: it has no tar installed",
 	RestoreReadme: `WSL backups made by wslbak (https://github.com/Boring206/wslbak)
 
 Each subfolder is one distro. A backup is two files:

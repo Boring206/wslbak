@@ -2,7 +2,7 @@
 # Creates and removes the throwaway WSL distro that the end-to-end tests and the
 # experiments run against, so that nothing ever touches a real distro.
 #
-#   scripts/e2e-distro.sh create    install Debian as wslbak-e2e-<random> and print its name
+#   scripts/e2e-distro.sh create    install a distro as wslbak-e2e-<random> and print its name
 #   scripts/e2e-distro.sh name      print the name of the current test distro
 #   scripts/e2e-distro.sh status    show where it is registered and where it is expected
 #   scripts/e2e-distro.sh destroy   unregister it and delete its folder
@@ -10,19 +10,49 @@
 # Run inside WSL. The distro lives in %LOCALAPPDATA%\wslbak-e2e\<name>; its name is
 # remembered in local/e2e-distro (local/ is gitignored).
 #
+# E2E_DISTRO chooses what to install (default: Debian). It is a name from
+# `wsl --list --online`, for example FedoraLinux-44, archlinux or openSUSE-Tumbleweed,
+# or the word alpine, which downloads Alpine's mini root file system instead (Alpine is
+# not in that list). Each choice keeps its own test distro, so several can exist at once.
+#
 # scripts/e2e.sh sources this file for its helpers.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STATE="$ROOT/local/e2e-distro"
+E2E_DISTRO="${E2E_DISTRO:-Debian}"
+FAMILY="$(printf '%s' "$E2E_DISTRO" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' '-')"
+if [ "$FAMILY" = debian ]; then
+  STATE="$ROOT/local/e2e-distro"
+else
+  STATE="$ROOT/local/e2e-distro-$FAMILY"
+fi
 SYS32="$(wslpath 'C:\Windows\System32')"
 WSL="$SYS32/wsl.exe"
 REG="$SYS32/reg.exe"
 LXSS='HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss'
 NAME_RE='^wslbak-e2e-[0-9a-f]{8}$'
 
+# ensure_interop puts back the kernel's handler for Windows programs when it is missing.
+#
+# All WSL2 distros share one kernel, and with it one list of binfmt_misc handlers. When a
+# Fedora 44 distro (systemd 259) shuts down, that list is emptied for everybody, and from
+# then on no .exe can be started from any distro ("Exec format error"). The tests start
+# and stop faithful copies of the test distro, so on Fedora they trigger this themselves.
+# WSL's launcher can still be called directly, which is enough to register the handler
+# again as root. This is a workaround for the tests only; wslbak does not do it.
+ensure_interop() {
+  [ -e /proc/sys/fs/binfmt_misc/WSLInterop ] && return 0
+  printf '%s\n' 'systemctl restart systemd-binfmt 2>/dev/null' \
+    '[ -e /proc/sys/fs/binfmt_misc/WSLInterop ] || echo ":WSLInterop:M::MZ::/init:P" > /proc/sys/fs/binfmt_misc/register' |
+    (cd "$SYS32" && /init "$SYS32/wsl.exe" wsl.exe -d "$WSL_DISTRO_NAME" -u root -e sh -s) >/dev/null 2>&1
+  [ -e /proc/sys/fs/binfmt_misc/WSLInterop ]
+}
+
 # Windows tools are started from a Windows directory: with a Linux working directory
 # cmd.exe and friends print a warning about UNC paths.
-win() { (cd "$SYS32" && "$@"); }
+win() {
+  ensure_interop
+  (cd "$SYS32" && "$@")
+}
 
 # wsl.exe prints UTF-16 unless WSL_UTF8 is set, and the variable only crosses into
 # Windows when it is listed in WSLENV.
@@ -59,6 +89,27 @@ current_name() {
   printf '%s\n' "$name"
 }
 
+# Alpine is not offered by wsl --install, so its mini root file system is downloaded and
+# imported. The file name and checksum come from Alpine's own release list.
+import_alpine() {
+  local name="$1" dir="$2" base tmp file sum arch
+  arch="$(uname -m)"
+  base="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/$arch"
+  tmp="$(wslpath -u "$(sandbox_win)")/download-$name"
+  mkdir -p "$tmp"
+  curl -fsSL "$base/latest-releases.yaml" -o "$tmp/releases.yaml" || return 1
+  file="$(awk '/flavor: alpine-minirootfs/{f=1} f && /file:/{print $2; exit}' "$tmp/releases.yaml")"
+  sum="$(awk '/flavor: alpine-minirootfs/{f=1} f && /sha256:/{print $2; exit}' "$tmp/releases.yaml")"
+  [ -n "$file" ] && [ -n "$sum" ] || { echo "could not find the mini root file system in Alpine's release list" >&2; return 1; }
+  curl -fsSL "$base/$file" -o "$tmp/$file" || return 1
+  echo "$sum  $tmp/$file" | sha256sum -c - >/dev/null || { echo "checksum mismatch for $file" >&2; return 1; }
+  wsl_exe --import "$name" "$dir" "$(wslpath -w "$tmp/$file")" --version 2
+  local status=$?
+  rm -f "$tmp/$file" "$tmp/releases.yaml"
+  rmdir "$tmp" 2>/dev/null
+  return $status
+}
+
 create() {
   if [ -s "$STATE" ]; then
     echo "a test distro is already recorded: $(cat "$STATE") (run destroy first)" >&2
@@ -70,7 +121,11 @@ create() {
   mkdir -p "$ROOT/local"
   # Recorded before installing, so that a half-finished install can still be cleaned up by destroy.
   printf '%s\n' "$name" > "$STATE"
-  wsl_exe --install Debian --name "$name" --location "$dir" --no-launch >&2
+  if [ "$FAMILY" = alpine ]; then
+    import_alpine "$name" "$dir" >&2
+  else
+    wsl_exe --install "$E2E_DISTRO" --name "$name" --location "$dir" --no-launch >&2
+  fi
   [ -n "$(registered_path "$name")" ] || { echo "the install did not register $name" >&2; exit 1; }
   printf '%s\n' "$name"
 }

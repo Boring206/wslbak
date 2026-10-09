@@ -7,11 +7,26 @@ set -e
 LC_ALL=C
 export LC_ALL DEBIAN_FRONTEND=noninteractive
 
-# setcap, setfacl and setfattr are not in a minimal image. Without network access they
-# stay missing, and the files that need them are simply not created.
-if ! command -v setcap >/dev/null 2>&1 || ! command -v setfacl >/dev/null 2>&1 || ! command -v setfattr >/dev/null 2>&1; then
-	apt-get update -qq >/dev/null 2>&1 || true
-	apt-get install -y -qq libcap2-bin acl attr >/dev/null 2>&1 || true
+# setcap, setfacl and setfattr are not in a minimal image, and Alpine starts without GNU
+# tar and coreutils. Without network access the tools stay missing; the files that need
+# setcap, setfacl or setfattr are then simply not created.
+install_tools() {
+	if command -v apt-get >/dev/null 2>&1; then
+		apt-get update -qq && apt-get install -y -qq libcap2-bin acl attr
+	elif command -v dnf >/dev/null 2>&1; then
+		dnf install -y -q tar libcap acl attr findutils
+	elif command -v zypper >/dev/null 2>&1; then
+		zypper --non-interactive --quiet install tar libcap-progs acl attr findutils
+	elif command -v pacman >/dev/null 2>&1; then
+		pacman -Sy --noconfirm --needed tar libcap acl attr findutils
+	elif command -v apk >/dev/null 2>&1; then
+		apk add --quiet tar coreutils findutils acl attr
+		apk add --quiet libcap-utils || apk add --quiet libcap
+	fi
+}
+if ! command -v setcap >/dev/null 2>&1 || ! command -v setfacl >/dev/null 2>&1 || ! command -v setfattr >/dev/null 2>&1 ||
+	! tar --version 2>/dev/null | grep -q 'GNU tar'; then
+	install_tools >/dev/null 2>&1 || true
 fi
 
 rm -rf /wslbak-fixture
