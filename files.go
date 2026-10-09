@@ -67,6 +67,15 @@ func pickBackup(opts options) (*manifest, int) {
 	return nil, fail(fmt.Errorf(T.NoBackups, source.Dir))
 }
 
+// parentOf 回傳封存裡某個名稱的上一層：./etc/passwd → ./etc，./etc → 「.」。
+// 不用 path.Dir：它會把開頭的 ./ 整理掉，結果就和索引裡的名稱對不上了。
+func parentOf(member string) string {
+	if i := strings.LastIndexByte(member, '/'); i > 0 {
+		return member[:i]
+	}
+	return "."
+}
+
 func fileRow(e indexEntry, name string) []string {
 	size := ""
 	if e.Type == typeFile {
@@ -128,7 +137,7 @@ func cmdFiles(opts options) int {
 		case name == target:
 			copy := e
 			self = &copy
-		case name != "." && path.Dir(name) == target:
+		case name != "." && parentOf(name) == target:
 			children = append(children, e)
 		}
 		return true

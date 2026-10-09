@@ -351,7 +351,7 @@ func registerTask(at string) error {
 		return err
 	}
 	task := taskSpec{SID: sid, Command: filepath.Join(programDir, installedGUI), Arguments: taskArguments(),
-		At: at, LogonDelay: true, Description: T.TaskDescription}
+		At: at, Now: time.Now(), LogonDelay: true, Description: T.TaskDescription}
 	if err := createTask(task); err != nil {
 		// 有些環境不讓一般使用者建立「登入時」的觸發；退回只有每天定時。
 		logf("create task with a logon trigger: %v", err)

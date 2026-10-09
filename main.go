@@ -36,6 +36,8 @@ type options struct {
 	unexclude   []string
 	name        string
 	to          string
+	into        string
+	paths       []string
 	find        string
 	home        string // 測試用：把設定、紀錄與驗證用的暫存都放到這個資料夾
 
@@ -69,7 +71,7 @@ var commandFlags = map[string][]string{
 	"status":    {},
 	"doctor":    {"--distro"},
 	"verify":    {"--distro"},
-	"restore":   {"--distro", "--name", "--to", "--dry-run", "--yes"},
+	"restore":   {"--distro", "--name", "--to", "--path", "--into", "--dry-run", "--yes"},
 	"uninstall": {"--dry-run", "--yes"},
 }
 
@@ -77,7 +79,11 @@ var commandFlags = map[string][]string{
 var takesID = map[string]bool{"verify": true, "restore": true}
 
 // conflicts 是不能同時出現的旗標。
-var conflicts = [][2]string{{"--enable", "--disable"}, {"--all", "--distro"}}
+var conflicts = [][2]string{{"--enable", "--disable"}, {"--all", "--distro"},
+	{"--path", "--name"}, {"--path", "--to"}, {"--into", "--to"}}
+
+// needs 是「有前者就一定要有後者」的旗標。
+var needs = [][2]string{{"--path", "--into"}, {"--into", "--path"}}
 
 var globalFlags = map[string]bool{"--lang": true, "--home": true, "--debug": true, "--help": true, "--version": true}
 
@@ -86,7 +92,7 @@ var (
 	valueFlags = map[string]bool{
 		"--distro": true, "--dest": true, "--keep": true, "--keep-weekly": true, "--keep-monthly": true,
 		"--at": true, "--webhook": true, "--notify": true, "--verify": true, "--exclude": true, "--unexclude": true,
-		"--name": true, "--to": true, "--find": true, "--home": true, "--lang": true,
+		"--name": true, "--to": true, "--path": true, "--into": true, "--find": true, "--home": true, "--lang": true,
 	}
 	boolFlags = map[string]bool{
 		"--dry-run": true, "--no-verify": true, "--scheduled": true, "--yes": true, "--all": true,
@@ -183,6 +189,10 @@ func (o *options) setValue(name, value string) error {
 		o.name = value
 	case "--to":
 		o.to = value
+	case "--path":
+		o.paths = append(o.paths, value)
+	case "--into":
+		o.into = value
 	case "--find":
 		o.find = value
 	case "--home":
@@ -287,6 +297,11 @@ func parseArgs(args []string) (options, error) {
 	for _, pair := range conflicts {
 		if o.given[pair[0]] && o.given[pair[1]] {
 			return o, fmt.Errorf(T.FlagConflict, pair[0], pair[1])
+		}
+	}
+	for _, pair := range needs {
+		if o.given[pair[0]] && !o.given[pair[1]] {
+			return o, fmt.Errorf(T.FlagNeeds, pair[0], pair[1])
 		}
 	}
 	rest := positional[1:]

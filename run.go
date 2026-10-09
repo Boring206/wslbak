@@ -20,6 +20,28 @@ const dueAfter = 20 * time.Hour
 // staleAfter：上次成功的備份超過這麼久，就算是過期了（排程是每天一次）。
 const staleAfter = 48 * time.Hour
 
+// backupErrorBrief 是放進通知裡的說明：只說是哪一類的問題，不帶細節。
+// 細節（tar 的錯誤訊息、檔案路徑）可能含有檔名，而通知會送到 webhook，那可能是公開的頻道。
+func backupErrorBrief(err error) string {
+	var be *backupError
+	if !errors.As(err, &be) {
+		return T.BriefOther
+	}
+	switch be.Kind {
+	case failNotGNUTar:
+		return T.BackupNotGNUTar
+	case failNotTar, failStart:
+		return T.BriefNoStream
+	case failWrite:
+		return T.BriefWrite
+	case failStalled:
+		return T.BackupStalled
+	case failTruncated:
+		return T.BackupTruncated
+	}
+	return T.BriefTar
+}
+
 // backupErrorText 把備份失敗的種類換成給使用者看的說明。
 func backupErrorText(err error) string {
 	var be *backupError
@@ -149,16 +171,21 @@ func runOne(opts options, cfg *config, name string, distros []regDistro, wsl str
 	dir := filepath.Join(dc.Dest, name)
 
 	// 設定不對就不動手，並把原因告訴使用者（排程執行時是通知）。
-	giveUp := func(message string) int {
+	// message 顯示在這台電腦上（畫面、status、doctor）；brief 是送出去的通知內容，空的話就用 message。
+	giveUpWith := func(message, brief string) int {
 		logf("%s: %s", name, message)
 		fmt.Fprintln(os.Stderr, red(fmt.Sprintf(T.ErrorLine, message)))
+		if brief == "" {
+			brief = message
+		}
 		if !opts.dryRun {
 			st.LastAttempt, st.LastResult, st.LastMessage = time.Now(), resultFailed, message
 			saveState(state)
-			notify(cfg, fmt.Sprintf(T.NotifyFailedTitle, name), message)
+			notify(cfg, fmt.Sprintf(T.NotifyFailedTitle, name), brief)
 		}
 		return 2
 	}
+	giveUp := func(message string) int { return giveUpWith(message, "") }
 	d := findDistro(distros, name)
 	if d == nil {
 		return giveUp(fmt.Sprintf(T.DistroGone, name))
@@ -195,7 +222,7 @@ func runOne(opts options, cfg *config, name string, distros []regDistro, wsl str
 	bar.clear()
 	if err != nil {
 		logf("%s: backup failed: %v", name, err)
-		return giveUp(backupErrorText(err))
+		return giveUpWith(backupErrorText(err), backupErrorBrief(err)+T.BriefSeeLog)
 	}
 	fmt.Printf("  "+T.RunWritten+"\n", m.Archive, humanBytes(m.Size), humanDuration(time.Duration(m.Seconds*float64(time.Second))))
 	if m.WarningCount > 0 {

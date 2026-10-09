@@ -203,6 +203,84 @@ run status
 expect_rc 0 "status exits 0 after a verified backup"
 expect_has "Last success: just now" "status shows the success"
 
+section "4b. Looking inside a backup"
+expect_true "the backup has a file index next to it" [ -f "$DEST/$DISTRO/$FIRST.idx.gz" ]
+run files
+expect_rc 0 "files lists the root of the newest backup"
+expect_has "etc/" "the listing shows /etc"
+expect_has "wslbak-fixture/" "and the folder with the test files"
+run files "$FIRST" /wslbak-fixture
+expect_rc 0 "files lists a folder of a named backup"
+expect_has "plain.txt" "a plain file is listed"
+expect_has "symlink -> plain.txt" "a symbolic link shows its target"
+expect_has "hard2 = /wslbak-fixture/hard1" "a hard link shows what it is linked to"
+expect_has "sparse.bin" "the sparse file is listed"
+expect_has "9.0 GB" "with its full size"
+run files /wslbak-fixture/plain.txt
+expect_has "1234:5678" "a single file shows its owner"
+run files --find "with space"
+expect_rc 0 "files --find finds a name with a space and Chinese characters"
+expect_has "/wslbak-fixture/中文檔名 with space.txt" "and prints its full path"
+run files /no/such/folder
+expect_rc 1 "files exits 1 for a path that is not in the backup"
+run files --find no-such-name-anywhere
+expect_rc 1 "files --find exits 1 when nothing matches"
+run files /etc/../root
+expect_rc 2 "files refuses a path with .."
+
+section "4c. Bringing back single files"
+BACK="/root/wslbak-back-$RUN_ID"
+INSIDE_BEFORE="$(sh_in "$DISTRO" "ls -d /root/wslbak-back-* 2>/dev/null | wc -l")"
+run restore --path /wslbak-fixture --into "$BACK" --dry-run
+expect_rc 0 "restore --path --dry-run succeeds"
+expect_has "no existing file is overwritten" "the plan says nothing is overwritten"
+expect_true "the dry run created nothing inside the distro" [ "$(sh_in "$DISTRO" "ls -d /root/wslbak-back-* 2>/dev/null | wc -l")" = "$INSIDE_BEFORE" ]
+run restore --path /wslbak-fixture --into "$BACK" --yes
+expect_rc 0 "restore --path brings a folder back into the distro"
+expect_has "Brought back" "and reports it"
+# The files went through GNU tar inside the distro, so everything is preserved, ACLs included
+# (unlike a whole-distro restore through wsl --import).
+FIXTURE_SIG='
+LC_ALL=C; export LC_ALL
+cd "$1" || exit 1
+stat -c "%n|%F|%s|%h|%u:%g|%a|%y" plain.txt sparse.bin cap-binary acl-file hard1 hard2 symlink fifo devnull "中文檔名 with space.txt"
+[ "$(stat -c %b sparse.bin)" -lt 100000 ] && echo sparse
+[ "$(stat -c %i hard1)" = "$(stat -c %i hard2)" ] && echo linked
+getcap cap-binary 2>/dev/null | sed "s|.* ||"
+getfattr -d plain.txt 2>/dev/null | grep -v "^# file"
+getfacl -c acl-file 2>/dev/null
+readlink symlink
+cat "中文檔名 with space.txt"
+find . -path "./d*" -name "*.txt" | wc -c
+'
+sig() { printf 'set -- %s\n%s\n' "$2" "$FIXTURE_SIG" | win "$WSL" -d "$1" -u root -e sh -s 2>&1 | tr -d '\r'; }
+WANT="$(sig "$DISTRO" /wslbak-fixture)"
+GOT="$(sig "$DISTRO" "$BACK/wslbak-fixture")"
+if [ -n "$WANT" ] && [ "$WANT" = "$GOT" ]; then
+	ok "the files that came back match the originals, ACLs included"
+else
+	bad "the files that came back differ from the originals" "$(diff <(echo "$WANT") <(echo "$GOT"))"
+fi
+expect_true "the new folder belongs to the owner of the folder it is in" [ "$(sh_in "$DISTRO" "stat -c %u:%g $BACK")" = "$(sh_in "$DISTRO" "stat -c %u:%g /root")" ]
+expect_true "the temporary link was removed" [ -z "$(sh_in "$DISTRO" 'ls /run/wslbak-* /dev/shm/wslbak-* /tmp/wslbak-* 2>/dev/null')" ]
+run restore --path /wslbak-fixture/plain.txt --into "$BACK" --yes
+expect_rc 2 "restore --path refuses a folder that is not empty"
+expect_has "not empty" "and says why"
+# A hard link whose other name is outside the selection: both names must come back.
+run restore --path /wslbak-fixture/hard2 --into "$BACK-link" --yes
+expect_rc 0 "restore --path brings back a single hard-linked file"
+expect_true "together with the file it is linked to" [ "$(sh_in "$DISTRO" "cd $BACK-link/wslbak-fixture && [ \"\$(stat -c %i hard1)\" = \"\$(stat -c %i hard2)\" ] && cat hard2")" = link ]
+run restore --path /no/such/file --into "$BACK-none" --yes
+expect_rc 2 "restore --path refuses a path that is not in the backup"
+expect_true "and creates nothing for it" [ -z "$(sh_in "$DISTRO" "ls -d $BACK-none 2>/dev/null")" ]
+run restore --path / --into "$BACK-root" --yes
+expect_rc 2 "restore --path refuses the whole root"
+run restore --path /etc/hostname --into relative/folder --yes
+expect_rc 2 "restore --path refuses a target that is not an absolute path"
+run restore --path /etc/hostname --yes
+expect_rc 2 "--path needs --into"
+sh_in "$DISTRO" "rm -rf /root/wslbak-back-$RUN_ID /root/wslbak-back-$RUN_ID-link" >/dev/null
+
 section "5. The archive restores with plain wsl --import, without wslbak"
 PLAIN="wslbak-e2e-p-$RUN_ID"
 PLAIN_DIR="$SANDBOX_WIN\\plain"
@@ -266,6 +344,7 @@ section "8. Retention"
 # keep is 2 and three verified backups exist now, so the oldest must be gone.
 expect_true "the oldest backup was deleted" [ ! -e "$DEST/$DISTRO/$FIRST.tar.gz" ]
 expect_true "together with its manifest" [ ! -e "$DEST/$DISTRO/$FIRST.json" ]
+expect_true "and its file index" [ ! -e "$DEST/$DISTRO/$FIRST.idx.gz" ]
 expect_true "two backups remain" [ "$(backups | wc -l)" = 2 ]
 # Files wslbak did not write must survive, even ones that look like backups.
 echo mine >"$DEST/$DISTRO/holiday-photos.tar.gz"
@@ -361,7 +440,15 @@ LAST_BEFORE="$(newest_backup)"
 # A backup that succeeded less than 20 hours ago makes the scheduled run exit at once, so
 # forget the earlier successes first.
 rm -f "$HOME_DIR/state.json"
-if win "$SYS32/schtasks.exe" /Run /TN "$(task_name)" </dev/null >/dev/null 2>&1; then
+# Task Scheduler sometimes answers "the task is disabled" for a task that is enabled and
+# ready (seen within a couple of minutes of registering it, with third-party antivirus
+# installed). Asking again shortly afterwards works, so try for up to a minute.
+TASK_STARTED=1
+for _ in $(seq 1 12); do
+	TASK_OUT="$(win "$SYS32/schtasks.exe" /Run /TN "$(task_name)" </dev/null 2>&1)" && { TASK_STARTED=0; break; }
+	sleep 5
+done
+if [ "$TASK_STARTED" = 0 ]; then
 	for _ in $(seq 1 180); do
 		[ "$(newest_backup)" != "$LAST_BEFORE" ] && grep -q '"lastResult": "ok"' "$HOME_DIR/state.json" 2>/dev/null && break
 		sleep 1
@@ -372,9 +459,49 @@ if win "$SYS32/schtasks.exe" /Run /TN "$(task_name)" </dev/null >/dev/null 2>&1;
 	run list
 	expect_has "$(newest_backup)" "the new backup is listed"
 else
-	bad "schtasks /Run failed"
+	bad "schtasks /Run failed" "$(printf '%s' "$TASK_OUT" | iconv -f CP950 -t UTF-8 2>/dev/null || printf '%s' "$TASK_OUT")"
 fi
 expect_true "the look-alike distro survived all of this" registered "$DECOY"
+
+section "13b. Changing settings"
+run config
+expect_rc 0 "config shows the settings"
+expect_has "every day at 04:30" "including the schedule"
+expect_has "the newest 2 backups" "and how many backups are kept"
+BEFORE="$(snapshot)"
+run config --keep 9 --dry-run
+expect_rc 0 "config --dry-run succeeds"
+expect_has "--keep: 2 → 9" "and shows what would change"
+expect_true "config --dry-run left everything as it was" [ "$(snapshot)" = "$BEFORE" ]
+run config --keep 5 --keep-weekly 2 --exclude '/root/churn/*' --notify always
+expect_rc 0 "config changes several settings at once"
+expect_has "Saved" "and saves them"
+run config
+expect_has "the newest 5 backups" "the new number of backups is shown"
+expect_has "one per week for 2 weeks" "with the weekly rule"
+expect_has "./root/churn/*" "and the new exclude"
+expect_has "after every backup" "and the new notification rule"
+run config --keep 5
+expect_has "Nothing changed" "setting a value it already has changes nothing"
+run config --at 05:15
+expect_rc 0 "config --at succeeds"
+expect_true "and the scheduled task now starts at the new time" bash -c "cd '$SYS32' && ./schtasks.exe /Query /TN '$(task_name)' /XML </dev/null 2>/dev/null | tr -d '\\r\\0' | grep -q 'T05:15:00'"
+run config --unexclude /init
+expect_rc 2 "config refuses to stop excluding /init"
+run config -d some-other-distro --keep 3
+expect_rc 2 "config refuses a distro that is not set up"
+run config --keep 2 --keep-weekly 0 --unexclude '/root/churn/*' --notify failure --at 04:30
+expect_rc 0 "config puts the settings back"
+run run
+expect_rc 0 "a backup still succeeds after the settings were changed"
+
+section "13c. doctor"
+run doctor
+expect_true "doctor does not report a problem (exit 0 or 1)" [ "$RC" = 0 -o "$RC" = 1 ]
+expect_has "$DISTRO: can be backed up" "it checks the test distro"
+expect_has "Smart App Control" "it checks Smart App Control"
+expect_has "Schedule: every day at 04:30" "it finds the scheduled task"
+expect_has "the last success was" "and the last successful backup"
 
 section "14. Other language"
 OUT="$(timeout 60 node bin/wslbak.js --lang zh-TW --home "$HOME_DIR" status </dev/null 2>&1 | tr -d '\r')"

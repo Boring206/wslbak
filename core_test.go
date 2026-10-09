@@ -112,7 +112,7 @@ func TestShellQuoting(t *testing.T) {
 // 內嵌的腳本要整個包在 main 裡，最後一行才呼叫：腳本是從 stdin 讀的，
 // 中間的指令如果去讀 stdin，會把腳本的後半段吃掉。也不能帶 CR。
 func TestScriptsShape(t *testing.T) {
-	for name, script := range map[string]string{"backup.sh": backupScript, "check.sh": checkScript, "probe.sh": probeScript, "caches.sh": cachesScript} {
+	for name, script := range map[string]string{"backup.sh": backupScript, "check.sh": checkScript, "probe.sh": probeScript, "caches.sh": cachesScript, "restorefiles.sh": restoreFilesScript} {
 		// 內嵌的腳本是在使用者的 distro 裡以 root 執行的，不可以有遞迴刪除。
 		if regexp.MustCompile(`\brm\s+-[a-zA-Z]*[rR]`).MatchString(script) {
 			t.Errorf("%s contains a recursive rm", name)
@@ -420,6 +420,7 @@ func TestTaskXML(t *testing.T) {
 		Command:     `C:\Users\王 小明 & <Co>\AppData\Local\Programs\wslbak\wslbakw.exe`,
 		Arguments:   scheduledArgs,
 		At:          "03:05",
+		Now:         time.Date(2026, 10, 9, 16, 0, 0, 0, time.UTC),
 		LogonDelay:  true,
 		Description: `每天備份 "WSL" <distro> & more`,
 	}
@@ -462,7 +463,8 @@ func TestTaskXML(t *testing.T) {
 	if doc.Principal.UserId != spec.SID || doc.Principal.LogonType != "InteractiveToken" || doc.Principal.RunLevel != "LeastPrivilege" {
 		t.Errorf("principal = %+v", doc.Principal)
 	}
-	if doc.Triggers.Calendar.StartBoundary != "2026-01-01T03:05:00" {
+	// 註冊的時候今天的 03:05 已經過了，所以第一次是明天；開始時間絕不在過去。
+	if doc.Triggers.Calendar.StartBoundary != "2026-10-10T03:05:00" {
 		t.Errorf("start boundary = %q", doc.Triggers.Calendar.StartBoundary)
 	}
 	if doc.Triggers.Logon == nil || doc.Triggers.Logon.UserId != spec.SID || doc.Triggers.Logon.Delay == "" {
@@ -950,5 +952,212 @@ func TestAntivirus(t *testing.T) {
 	c, ok := judgeAntivirus([]string{"Windows Defender", "Avast Antivirus"}, `C:\Programs\wslbak`)
 	if !ok || c.Level != levelNote || !strings.Contains(c.Text, "Avast Antivirus") || !strings.Contains(c.Fix, `C:\Programs\wslbak`) {
 		t.Errorf("third-party antivirus: %+v, %v", c, ok)
+	}
+}
+
+func TestStallWatch(t *testing.T) {
+	start := time.Date(2026, 10, 9, 3, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) time.Time { return start.Add(d) }
+
+	// 資料一直在動：不算停住。
+	w := newStallWatch(start)
+	for i := 1; i <= 5; i++ {
+		if moved, stuck := w.observe(at(time.Duration(i)*time.Second), int64(i)*100); !moved || stuck {
+			t.Fatalf("tick %d: moved=%v stuck=%v", i, moved, stuck)
+		}
+	}
+	// 之後每秒檢查一次、位元組數不變：過了上限才算停住。
+	stuckAt := time.Duration(0)
+	for d := 6 * time.Second; d <= 5*time.Second+stallLimit+3*time.Second; d += time.Second {
+		if moved, stuck := w.observe(at(d), 500); moved {
+			t.Fatalf("no new data, but moved at %v", d)
+		} else if stuck {
+			stuckAt = d
+			break
+		}
+	}
+	if stuckAt <= 5*time.Second+stallLimit || stuckAt > 5*time.Second+stallLimit+2*time.Second {
+		t.Errorf("declared stuck at %v, expected just after %v", stuckAt, 5*time.Second+stallLimit)
+	}
+
+	// 電腦睡了兩個小時再醒來：醒來的那一刻不能被當成停住，要重新開始計時。
+	w = newStallWatch(start)
+	w.observe(at(time.Second), 100)
+	w.observe(at(2*time.Second), 100)
+	wake := 2*time.Second + 2*time.Hour
+	if _, stuck := w.observe(at(wake), 100); stuck {
+		t.Error("declared stuck immediately after a two-hour suspension")
+	}
+	// 醒來之後每秒照常檢查，但真的一直沒有資料：要從醒來那一刻起再過完整的上限才判定停住。
+	stuckAfter := time.Duration(0)
+	for d := time.Second; d <= stallLimit+3*time.Second; d += time.Second {
+		if _, stuck := w.observe(at(wake+d), 100); stuck {
+			stuckAfter = d
+			break
+		}
+	}
+	if stuckAfter <= stallLimit || stuckAfter > stallLimit+2*time.Second {
+		t.Errorf("after waking, declared stuck after %v; expected just after %v", stuckAfter, stallLimit)
+	}
+}
+
+func TestBackupErrorBrief(t *testing.T) {
+	secret := "/home/me/clients/acme-merger/plan.docx"
+	for _, kind := range []backupFailure{failStart, failNotGNUTar, failNotTar, failWrite, failStalled, failTruncated, failTar} {
+		err := &backupError{Kind: kind, Detail: "tar: ." + secret + ": Read error at byte 0"}
+		brief := backupErrorBrief(err) + T.BriefSeeLog
+		if brief == "" || strings.Contains(brief, "acme") || strings.Contains(brief, "Read error") {
+			t.Errorf("kind %d: the notification text carries details: %q", kind, brief)
+		}
+	}
+	// 顯示在本機的訊息仍然帶著細節。
+	if text := backupErrorText(&backupError{Kind: failTar, Detail: "tar exit 2: tar: ." + secret + ": Read error"}); !strings.Contains(text, "acme") {
+		t.Errorf("the local message lost its detail: %q", text)
+	}
+	if backupErrorBrief(errors.New("something else")) == "" {
+		t.Error("an unknown error still needs a notification text")
+	}
+}
+
+func TestValidInto(t *testing.T) {
+	for _, p := range []string{"/home/me/restored", "/var/tmp/wslbak restore", "/root/回復"} {
+		if !validInto(p) {
+			t.Errorf("validInto(%q) should be accepted", p)
+		}
+	}
+	for _, p := range []string{"", "/", "//", "home/me/x", "./x", `C:\Users\me`, "/home/../etc", "/a\nb", "/a\x00b"} {
+		if validInto(p) {
+			t.Errorf("validInto(%q) should be rejected", p)
+		}
+	}
+}
+
+func TestSelection(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "20261009T030000Z"+indexSuffix)
+	w, err := newIndexWriter(file, "20261009T030000Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := func(name, kind string, size int64, link string) {
+		w.add(indexEntry{Path: name, Type: kind, Size: size, Link: link})
+	}
+	add(".", typeDir, 0, "")
+	add("./etc", typeDir, 0, "")
+	add("./etc/hosts", typeFile, 200, "")
+	add("./home", typeDir, 0, "")
+	add("./home/me", typeDir, 0, "")
+	add("./home/me/shared.bin", typeFile, 1000, "")
+	add("./home/me/project", typeDir, 0, "")
+	add("./home/me/project/main.go", typeFile, 300, "")
+	add("./home/me/project/data", typeDir, 0, "")
+	add("./home/me/project/data/copy.bin", typeHardlink, 0, "./home/me/shared.bin")
+	add("./home/me/project/inner-link", typeHardlink, 0, "./home/me/project/main.go")
+	add("./home/me/project-old", typeDir, 0, "")
+	add("./home/me/project-old/main.go", typeFile, 50, "")
+	if err := w.close(true); err != nil {
+		t.Fatal(err)
+	}
+
+	sel, stats, err := resolveSelection(file, []string{"/home/me/project/", "/etc/hosts", "home/me/project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sel.roots) != 2 {
+		t.Errorf("the same path given twice should be kept once: %q", sel.roots)
+	}
+	// 目錄、它底下的五個項目，加上 /etc/hosts。
+	if stats.Entries != 6 || stats.Bytes != 500 || len(stats.Missing) != 0 {
+		t.Errorf("stats = %+v", stats)
+	}
+	// 選中的硬連結指向選擇範圍外的檔案：那個檔案要一起帶上；指向範圍內的不用另外帶。
+	if !sel.extras["./home/me/shared.bin"] || len(sel.extras) != 1 {
+		t.Errorf("extras = %v", sel.extras)
+	}
+	for name, want := range map[string]bool{
+		"./home/me/project":               true,
+		"./home/me/project/":              true, // tar 裡的目錄名稱帶結尾斜線
+		"./home/me/project/main.go":       true,
+		"./home/me/project/data/copy.bin": true,
+		"./etc/hosts":                     true,
+		"./home/me/shared.bin":            true,  // 硬連結的對象
+		"./home/me/project-old":           false, // 只是名稱的開頭相同
+		"./home/me/project-old/main.go":   false,
+		"./home/me":                       false,
+		"./etc":                           false,
+		"./etc/hostsfile":                 false,
+		".":                               false,
+	} {
+		if sel.wants(name) != want {
+			t.Errorf("wants(%q) = %v, want %v", name, !want, want)
+		}
+	}
+
+	_, stats, err = resolveSelection(file, []string{"/etc/hosts", "/etc/shadow", "/nope/x"})
+	if err != nil || !reflect.DeepEqual(stats.Missing, []string{"/etc/shadow", "/nope/x"}) {
+		t.Errorf("missing paths: %v, %v", stats.Missing, err)
+	}
+	if _, _, err = resolveSelection(file, []string{"/"}); err == nil {
+		t.Error("selecting the root should be refused")
+	}
+	if _, _, err = resolveSelection(file, []string{"/etc/../home"}); err == nil {
+		t.Error("a path with .. should be refused")
+	}
+}
+
+func TestExtractArgs(t *testing.T) {
+	link := "/run/wslbak-0123456789abcdef"
+	args := extractArgs("Ubuntu", link, nil)
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-d Ubuntu -u root -e env LC_ALL=C tar", "--extract", "--file=-", "--directory=" + link,
+		"--numeric-owner", "--keep-old-files", "--xattrs", "--xattrs-include=*", "--acls"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("extract arguments lack %q: %s", want, joined)
+		}
+	}
+	// 備份時這個 distro 的 tar 不支援的選項，解開時也不能用。
+	if joined := strings.Join(extractArgs("Ubuntu", link, []string{"--acls"}), " "); strings.Contains(joined, "--acls") || !strings.Contains(joined, "--xattrs") {
+		t.Errorf("with --acls dropped: %s", joined)
+	}
+	if joined := strings.Join(extractArgs("Ubuntu", link, []string{"--acls", "--xattrs"}), " "); strings.Contains(joined, "--acls") || strings.Contains(joined, "--xattrs") {
+		t.Errorf("with --xattrs dropped: %s", joined)
+	}
+	// 腳本回報的連結要是我們自己的格式才會被用在命令列上。
+	for value, want := range map[string]bool{
+		"/run/wslbak-0123456789abcdef":         true,
+		"/dev/shm/wslbak-0123456789abcdef":     true,
+		"/tmp/wslbak-0123456789abcdef":         true,
+		"/run/wslbak-0123456789abcdef/../etc":  false,
+		"/run/wslbak-0123456789ABCDEF":         false,
+		"/home/me/wslbak-0123456789abcdef":     false,
+		"/run/wslbak-0123456789abcdef --force": false,
+		"--directory=/etc":                     false,
+		"":                                     false,
+	} {
+		if stagedLinkRe.MatchString(value) != want {
+			t.Errorf("stagedLinkRe.MatchString(%q) should be %v", value, want)
+		}
+	}
+}
+
+func TestFirstStart(t *testing.T) {
+	loc := time.FixedZone("CST", 8*3600)
+	now := time.Date(2026, 10, 9, 16, 0, 0, 0, loc)
+	cases := map[string]string{
+		"03:00": "2026-10-10T03:00:00", // 今天的已經過了
+		"16:00": "2026-10-10T16:00:00", // 剛好是現在：也算過了
+		"16:01": "2026-10-09T16:01:00", // 今天稍後
+		"23:59": "2026-10-09T23:59:00",
+		"bogus": "2026-10-10T03:00:00", // 不合法的值退回預設的 03:00
+	}
+	for at, want := range cases {
+		got := firstStart(at, now)
+		if got.Format("2006-01-02T15:04:05") != want || !got.After(now) {
+			t.Errorf("firstStart(%q) = %s, want %s (and always in the future)", at, got.Format("2006-01-02T15:04:05"), want)
+		}
+	}
+	// 月底跨到下個月。
+	if got := firstStart("03:00", time.Date(2026, 10, 31, 12, 0, 0, 0, loc)); got.Format("2006-01-02") != "2026-11-01" {
+		t.Errorf("month end: %v", got)
 	}
 }

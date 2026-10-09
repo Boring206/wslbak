@@ -102,6 +102,9 @@ func backupSources(cfg *config) []backupSource {
 }
 
 func cmdRestore(opts options) int {
+	if len(opts.paths) > 0 {
+		return cmdRestorePath(opts)
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return fail(err)
