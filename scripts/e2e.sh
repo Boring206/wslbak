@@ -703,7 +703,11 @@ else
 	PARTIAL_BEFORE="$(find "$DEST/$DISTRO" -name '*.partial' -printf '%s' 2>/dev/null)"
 	if [ -n "$WIN_PID" ] && [ -n "$PARTIAL_BEFORE" ]; then
 		win "$PWD/bin/e2e-console.exe" -suspend "$WIN_PID" -seconds 40 </dev/null >/dev/null 2>&1
-		expect_true "the program was frozen for 40 seconds while the backup was being written" [ $? = 0 ]
+		FROZEN=$?
+		expect_true "the program was frozen for 40 seconds while the backup was being written" [ "$FROZEN" = 0 ]
+		# If the helper was stopped half-way, the test's own program would stay frozen and
+		# keep the lock: end it, so that the rest of the run says what happened.
+		[ "$FROZEN" = 0 ] || win "$SYS32/taskkill.exe" /PID "$WIN_PID" /F </dev/null >/dev/null 2>&1
 		wait "$FROZEN_PID"
 		RC=$?
 		OUT="$(tr -d '\r' <"$SANDBOX/frozen.log")"

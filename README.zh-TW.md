@@ -6,8 +6,8 @@
 
 ![一分鐘看完怎麼用：設定、備份、看備份內容、取回一個檔案、還原整個 distro](docs/demo.zh-TW.gif)
 
-同樣的內容也有[影片檔](docs/demo.zh-TW.mp4)。畫面錄自在測試用 distro 上的實際執行，
-distro 的名稱與資料夾路徑換成了使用者會看到的樣子。
+同樣的內容也有[影片檔](docs/demo.zh-TW.mp4)。這是指令實際執行時的錄影：電腦上真的用 npm 套件裝了 wslbak，
+並有一個叫 `wslbak-demo` 的示範用 distro；畫面上的文字沒有任何修改，只有打字速度是畫出來的，等待時間有縮短。
 
 WSL 裡的檔案不在 OneDrive 與大多數備份工具的範圍內。它們全都放在一個虛擬磁碟裡，磁碟損壞或重灌
 Windows 之後就什麼都不剩。常見的做法是排程執行 `wsl --export`，但 `wsl --export` 會先把 distro
@@ -314,8 +314,9 @@ npm run e2e      # 端對端測試：在 WSL 裡對一個拋棄式的 distro 與
 npm run dist     # 在 dist/ 產生發佈用的 zip、檢查碼，以及 winget 與 scoop 的套件清單
 ```
 
-`bash scripts/demo.sh` 會重做這一頁開頭的示範：對一個拋棄式的 distro 實際執行指令並錄下來，再畫成動畫。
-它需要 Windows 上有裝 Pillow 的 Python。
+`bash scripts/demo.sh` 會重做這一頁開頭的示範：安裝打包好的 npm 套件與一個示範用的 distro，實際執行指令
+（用的是真正的設定資料夾、排程工作與預設資料夾，所以電腦上已經設定過 wslbak 時它會拒絕開始），
+把輸出錄下來畫成動畫，最後移除它建立的東西。它需要 Windows 上有裝 Pillow 的 Python。
 
 `npm run e2e` 第一次執行時會建立名為 `wslbak-e2e-<亂數>` 的 Debian distro；設定 `KEEP_E2E_DISTRO=1`
 可以把它留到下次再用，`scripts/e2e-distro.sh destroy` 則把它移除。設定 `E2E_DISTRO` 可以測試別的家族

@@ -1,38 +1,32 @@
 #!/usr/bin/env python3
-"""Records the demo that is shown in the README.
+"""Records the tour that the README shows, as it happens.
 
-It runs real wslbak commands against a throwaway distro and writes what they printed, with
-the time each piece arrived, to a JSON file. scripts/demo-render.py turns that file into
-pictures. Nothing here is typed in by hand: the output in the demo is what the program said.
+Each step is a command line that is handed to bash exactly as it is shown, on a PC where
+wslbak is really installed and a demo distro exists. What the command prints is written to a
+JSON file together with the time each piece arrived; scripts/demo-render.py draws that file.
+Nothing is replaced, hidden or added: the text in the pictures is the text that was printed,
+and the commands in the pictures are the commands that ran. Questions are answered through
+the command's input, and the answers are recorded as what was typed. The output is read
+through a pipe, so the progress line that wslbak redraws on a console is not part of it.
 
-Two things are changed for the viewer, and only in how they are shown:
-  - the commands are shown without the options that point them at the test distro and the
-    sandbox folder (a user with one distro would not type them);
-  - the name of the test distro and the sandbox paths are replaced by the names a user
-    would see (the distro really is Debian; the folders are the default ones).
+If a step fails, the recording stops and nothing is drawn.
 
 Usage (from scripts/demo.sh, inside WSL):
-  demo-record.py <lang> <distro> <home dir> <dest dir> <folder for the restored distro> <out.json>
+  demo-record.py <lang> <demo distro> <out.json>
+The language comes from WSLBAK_LANG, which scripts/demo.sh sets; PATH must lead to wslbak,
+and DEMO_SETTINGS is the path of the settings file that init writes.
 """
 
+import codecs
 import json
 import os
 import re
+import select
 import subprocess
 import sys
 import time
 
-lang, distro, home, dest, restored, out_path = sys.argv[1:7]
-root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-wsl_exe = '/mnt/c/Windows/System32/wsl.exe'
-
-
-def win(path):
-    return subprocess.run(['wslpath', '-w', path], capture_output=True, text=True).stdout.strip()
-
-
-home_win, dest_win, restored_win = win(home), win(dest), win(restored)
-users = home_win.split('\\AppData\\')[0].rsplit('\\', 1)[0]
+lang, distro, out_path = sys.argv[1:4]
 
 TITLES = {
     'en': {
@@ -41,6 +35,7 @@ TITLES = {
         'list': 'What is there?',
         'files': 'Look inside a backup',
         'oops': 'A file gets deleted',
+        'gone': 'It is gone',
         'path': 'Bring back just that file',
         'cat': 'It is back, in a new folder',
         'restore': 'Or restore the whole distro, as a new one',
@@ -52,6 +47,7 @@ TITLES = {
         'list': '有哪些備份',
         'files': '看備份裡有什麼',
         'oops': '不小心刪掉一個檔案',
+        'gone': '檔案不見了',
         'path': '只取回那個檔案',
         'cat': '檔案回來了，放在新的資料夾',
         'restore': '或把整個 distro 還原成新的',
@@ -59,91 +55,78 @@ TITLES = {
     },
 }[lang]
 
-# What the viewer sees instead of the test names. Longer strings first.
-SHOWN = [
-    # The scheduled task of a real installation has no --home option; that is the sandbox's.
-    (' --home ' + home_win, ''),
-    (home_win + '\\program', users + '\\you\\AppData\\Local\\Programs\\wslbak'),
-    (home_win, users + '\\you\\AppData\\Local\\wslbak'),
-    (dest_win, 'D:\\WSLBackup'),
-    (distro, 'Debian'),
-    ('wslbak-sandbox-', 'wslbak-'),
-]
-SID = re.compile(r'S-1-5-21-[0-9-]+')
-RESTORED_NAME = re.compile(r'Debian-restored-[0-9]{8}')
+# A question: the output stops, without a newline, at "… [y/N] ", "…: " or the Chinese "…：".
+QUESTION = re.compile(r'(\] |: |：)\Z')
+NUMBERED = re.compile(r'^\s*\[(\d+)\]\s+' + re.escape(distro) + r'\s*$', re.M)
 
 
-def shown(text):
-    for old, new in SHOWN:
-        text = text.replace(old, new)
-    # A restored distro goes to a folder named after it in the user's WSL folder by default;
-    # the recording puts it in the sandbox instead.
-    name = RESTORED_NAME.search(text)
-    text = text.replace(restored_win, users + '\\you\\WSL\\' + (name.group(0) if name else 'Debian-restored'))
-    return SID.sub('S-1-5-21-…', text)
-
-
-def record(title, command, argv, answers=(), stdin_text=None):
-    """Runs argv, feeding one answer each time the output stops at a question."""
-    proc = subprocess.Popen(argv, cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    if stdin_text is not None:
-        proc.stdin.write(stdin_text.encode())
-        proc.stdin.close()
+def record(title, command, yes_no=()):
+    """Runs the command line with bash and answers its questions the way a user would:
+    a yes-or-no question with the next of the given answers; "which distro?" (asked when more
+    than one can be backed up) with the number printed in front of the demo distro; and a
+    question that offers a default (where the backups go) by pressing Enter."""
+    proc = subprocess.Popen(['bash', '-c', command], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     began = time.monotonic()
-    events, seen, pending = [], '', list(answers)
+    events, seen, pending, answered = [], '', list(yes_no), 0
     fd = proc.stdout.fileno()
+    decode = codecs.getincrementaldecoder('utf-8')('replace').decode
     while True:
         chunk = os.read(fd, 4096)
         if not chunk:
             break
-        text = chunk.decode('utf-8', 'replace').replace('\r', '')
+        text = decode(chunk).replace('\r', '')
         events.append([round(time.monotonic() - began, 3), 'out', text])
         seen += text
-        if pending and seen.rstrip('\n').endswith('] ') and seen.endswith(' '):
-            time.sleep(0.9)
+        # Not a question if it does not look like one, or if more output follows at once.
+        if not QUESTION.search(seen) or select.select([fd], [], [], 0.7)[0]:
+            continue
+        asked = seen[answered:]
+        question = asked.rsplit('\n', 1)[-1]
+        if '[y/N]' in question:
+            if not pending:
+                raise SystemExit('a question that was not expected: ' + question)
             answer = pending.pop(0)
-            events.append([round(time.monotonic() - began, 3), 'in', answer])
-            proc.stdin.write((answer + '\n').encode())
-            proc.stdin.flush()
-    if stdin_text is None:
-        proc.stdin.close()
+        elif NUMBERED.search(asked):
+            answer = NUMBERED.findall(asked)[-1]
+        elif 'Enter' in question:
+            answer = ''
+        else:
+            raise SystemExit('a question the recorder does not know: ' + question)
+        time.sleep(0.4)
+        events.append([round(time.monotonic() - began, 3), 'in', answer])
+        proc.stdin.write((answer + '\n').encode())
+        proc.stdin.flush()
+        answered = len(seen)
+    proc.stdin.close()
     rc = proc.wait()
-    for e in events:
-        e[2] = shown(e[2])
     step = {'title': title, 'command': command, 'events': events, 'seconds': round(time.monotonic() - began, 2), 'rc': rc}
-    print('%-40s rc=%d  %.1fs' % (command[:40], rc, step['seconds']), file=sys.stderr)
+    print('%-46s rc=%d  %.1fs' % (command[:46], rc, step['seconds']), file=sys.stderr)
+    if pending:
+        raise SystemExit('a question that was expected never came: ' + command)
+    if rc != 0:
+        raise SystemExit('this step failed, so the tour stops here:\n' + ''.join(t for _, k, t in events if k == 'out'))
     return step
 
 
-def wslbak(title, command, *args, answers=()):
-    step = record(title, command, ['node', 'bin/wslbak.js', '--lang', lang, '--home', home, *args], answers)
-    step['shell'] = 'windows'
-    return step
+def only_the_demo_is_set_up():
+    """Before anything is backed up: the settings must name the demo distro and no other."""
+    settings = json.load(open(os.environ['DEMO_SETTINGS'], encoding='utf-8'))
+    names = sorted(settings['distros'])
+    if names != [distro]:
+        raise SystemExit('init set up %s, not just %s; stopping before any backup' % (names, distro))
 
 
-def inside(title, command):
-    """A command typed in the distro itself, as its default user."""
-    step = record(title, command, [wsl_exe, '-d', distro, '--cd', '~', '-e', 'sh', '-s'], stdin_text=command + '\n')
-    step['shell'] = 'distro'
-    return step
-
-
-yes = 'y'
-steps = [
-    wslbak(TITLES['init'], 'wslbak init', 'init', '-d', distro, '--dest', dest, answers=(yes, 'n')),
-    wslbak(TITLES['run'], 'wslbak run', 'run'),
-    wslbak(TITLES['list'], 'wslbak list', 'list'),
-    wslbak(TITLES['files'], 'wslbak files /home/me/project', 'files', '/home/me/project'),
-    inside(TITLES['oops'], 'rm project/notes.md && ls project'),
-    wslbak(TITLES['path'], 'wslbak restore --path /home/me/project/notes.md --into /home/me/recovered',
-           'restore', '--path', '/home/me/project/notes.md', '--into', '/home/me/recovered', answers=(yes,)),
-    inside(TITLES['cat'], 'cat recovered/home/me/project/notes.md'),
-    wslbak(TITLES['restore'], 'wslbak restore', 'restore', '--to', restored, answers=(yes,)),
-    wslbak(TITLES['status'], 'wslbak status', 'status'),
-]
+steps = []
+steps.append(record(TITLES['init'], 'wslbak init', yes_no=['y', 'n']))
+only_the_demo_is_set_up()
+steps.append(record(TITLES['run'], 'wslbak run'))
+steps.append(record(TITLES['list'], 'wslbak list'))
+steps.append(record(TITLES['files'], 'wslbak files /home/me/project'))
+steps.append(record(TITLES['oops'], 'wsl.exe -d %s rm /home/me/project/notes.md' % distro))
+steps.append(record(TITLES['gone'], 'wsl.exe -d %s ls /home/me/project' % distro))
+steps.append(record(TITLES['path'], 'wslbak restore --path /home/me/project/notes.md --into /home/me/recovered', yes_no=['y']))
+steps.append(record(TITLES['cat'], 'wsl.exe -d %s cat /home/me/recovered/home/me/project/notes.md' % distro))
+steps.append(record(TITLES['restore'], 'wslbak restore', yes_no=['y']))
+steps.append(record(TITLES['status'], 'wslbak status'))
 
 json.dump({'lang': lang, 'steps': steps}, open(out_path, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
-failed = [s['command'] for s in steps if s['rc'] != 0]
-if failed:
-    print('these steps did not exit with 0: ' + ', '.join(failed), file=sys.stderr)
-    sys.exit(1)
