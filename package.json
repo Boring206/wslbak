@@ -1,0 +1,51 @@
+{
+  "name": "wslbak",
+  "version": "0.1.0",
+  "description": "Scheduled, verified backups of a WSL distro without stopping it, and one-line restore. WSL 自動備份：不停機、備份完自動試還原、一行還原。",
+  "keywords": [
+    "wsl",
+    "wsl2",
+    "backup",
+    "restore",
+    "wsl-export",
+    "scheduled-backup",
+    "windows",
+    "cli"
+  ],
+  "homepage": "https://github.com/Boring206/wslbak#readme",
+  "bugs": "https://github.com/Boring206/wslbak/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Boring206/wslbak.git"
+  },
+  "license": "MIT",
+  "author": "Boring206",
+  "bin": {
+    "wslbak": "bin/wslbak.js"
+  },
+  "files": [
+    "bin/wslbak.js",
+    "bin/wslbak-x64.exe",
+    "bin/wslbak-arm64.exe",
+    "bin/wslbakw-x64.exe",
+    "bin/wslbakw-arm64.exe",
+    "README.zh-TW.md"
+  ],
+  "os": [
+    "win32",
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs --test",
+    "e2e": "bash scripts/e2e.sh",
+    "prepack": "node scripts/build.mjs --test && node scripts/build.mjs"
+  }
+}
