@@ -7,11 +7,15 @@
 #     user Boring206, repository wslbak, workflow file release.yml.
 # Provenance for the zips and for the npm package only works from a public repository,
 # so those steps are skipped while the repository is private.
+#
+# Started by hand, the workflow is a rehearsal: it builds the same files and then, instead
+# of publishing, checks that they can be installed in each of the ways the README offers.
 name: release
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,6 +32,7 @@ jobs:
         with:
           node-version: 24
       - name: The tag must match the version in package.json
+        if: github.event_name == 'push'
         shell: bash
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
       - run: npm test
@@ -40,8 +45,75 @@ jobs:
             dist/
             bin/*.exe
 
+  # The rehearsal. Nothing here leaves the runner.
+  rehearse:
+    needs: build
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+      - name: The checksums match the zips
+        shell: pwsh
+        run: |
+          Get-ChildItem dist | Format-Table Name, Length
+          foreach ($line in Get-Content dist/SHA256SUMS) {
+            $want, $name = $line -split '\s+', 2
+            $got = (Get-FileHash -Algorithm SHA256 (Join-Path dist $name.TrimStart('*'))).Hash.ToLower()
+            if ($got -ne $want) { Write-Error "checksum mismatch for $name"; exit 1 }
+            "ok  $name"
+          }
+      - name: "Without Node: unzip and run"
+        shell: pwsh
+        run: |
+          $zip = (Get-ChildItem dist/wslbak-*-windows-x64.zip).FullName
+          Expand-Archive $zip -DestinationPath unzipped
+          Get-ChildItem unzipped | Format-Table Name, Length
+          $version = & unzipped/wslbak.exe --version
+          $version
+          if ($version -ne "wslbak $((Get-Content package.json | ConvertFrom-Json).version)") { exit 1 }
+          & unzipped/wslbak.exe --lang en --help | Select-Object -First 3
+          $w = Start-Process -FilePath unzipped/wslbakw.exe -ArgumentList '--version' -Wait -PassThru
+          if ($w.ExitCode -ne 0) { exit 1 }
+      - name: "npm: what would be published, and installing it"
+        shell: pwsh
+        run: |
+          npm publish --dry-run --ignore-scripts
+          $tgz = npm pack --ignore-scripts --silent | Select-Object -Last 1
+          npm install --global --prefix "$PWD\npm-prefix" --no-audit --no-fund $tgz
+          $version = & "$PWD\npm-prefix\wslbak.cmd" --version
+          $version
+          if ($version -notmatch '^wslbak \d') { exit 1 }
+      - name: "winget: the manifests are valid"
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          winget --version
+          winget validate --manifest dist\winget --disable-interactivity
+      - name: "scoop: install from the manifest, with the zip taken from this run"
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Invoke-Expression "& {$(Invoke-RestMethod get.scoop.sh)} -RunAsAdmin"
+          $env:PATH = "$env:USERPROFILE\scoop\shims;$env:PATH"
+          $manifest = Get-Content dist\scoop\wslbak.json -Raw | ConvertFrom-Json
+          $zip = (Get-ChildItem dist/wslbak-*-windows-x64.zip).FullName
+          $manifest.architecture.'64bit'.url = ([Uri]$zip).AbsoluteUri
+          $manifest | ConvertTo-Json -Depth 8 | Set-Content local-wslbak.json
+          scoop install .\local-wslbak.json
+          $version = wslbak --version
+          $version
+          if ($version -notmatch '^wslbak \d') { exit 1 }
+          scoop uninstall wslbak
+
   github-release:
     needs: build
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -69,7 +141,7 @@ jobs:
   npm:
     needs: build
     # Trusted publishing with provenance needs a public repository.
-    if: ${{ !github.event.repository.private }}
+    if: ${{ github.event_name == 'push' && !github.event.repository.private }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
