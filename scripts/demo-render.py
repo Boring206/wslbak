@@ -7,9 +7,10 @@ Writes <output>.gif, and <output>.mp4 as well when ffmpeg is given (only that, w
 that come with Windows (Cascadia Mono, Microsoft JhengHei), so it is run with the Windows
 Python; scripts/demo.sh does that.
 
-What the commands printed, and when, comes from the recording. This script decides only how
-it looks: the typing of the commands, the colours, how long a finished screen stays up, and
-it never waits longer than a second and a half for the next line.
+The commands, what they printed, the answers that were typed and the timing all come from
+the recording; none of the text is changed here. This script decides only how it looks: the
+speed at which a command is typed, the colours, how long a finished screen stays up, and that
+a wait of more than a second and a half is shortened to that.
 """
 
 import json
@@ -58,26 +59,21 @@ LEFT, TOP = int(34 * S), int(92 * S)
 COLS = int((WIDTH - 2 * LEFT) // CELL)
 ROWS = (HEIGHT - TOP - int(20 * S)) // LINE
 
-SUCCESS = {
-    'en': ('Set up.', 'test restore passed', 'Done.', 'Brought back', 'Restored as the distro'),
-    'zh-TW': ('設定完成', '試還原通過', '完成。', '已取回', '已還原成'),
-}[LANG]
-
 CARDS = {
     'en': {
         'tagline': 'Backups of a WSL distro that do not stop it',
         'tour': 'a one-minute tour',
         'points': ['every backup is test-restored', 'restore a whole distro, or a single file',
                    'a standard .tar.gz that wsl --import accepts'],
-        'small': ['Recorded from real runs on a test distro. Its name and the folder paths were replaced by the',
-                  'ones a user would see, and the options that point at the test distro are not shown.'],
+        'small': ['Recorded as it happened, on a PC with wslbak installed from its npm package and a demo distro.',
+                  'No text is changed. Typing speed is drawn; waits over a second and a half are shortened.'],
     },
     'zh-TW': {
         'tagline': '不用停機的 WSL 備份',
         'tour': '一分鐘看完怎麼用',
         'points': ['每份備份都試還原過', '可以還原整個 distro，也可以只取回一個檔案', '標準的 .tar.gz，wsl --import 直接能用'],
-        'small': ['畫面來自在測試用 distro 上的實際執行。distro 的名稱與資料夾路徑換成了使用者會看到的樣子，',
-                  '指向測試 distro 的選項沒有顯示。'],
+        'small': ['全程實錄：電腦上真的用 npm 套件裝了 wslbak，並有一個示範用的 distro。',
+                  '文字沒有任何修改。打字速度是畫出來的；超過一秒半的等待有縮短。'],
     },
 }[LANG]
 
@@ -176,7 +172,7 @@ class Screen:
     def frame(self, ms, cursor=True):
         rows = []
         for line in self.lines:
-            rows.extend(wrap(self.colour(line)))
+            rows.extend(wrap(line))
         # More than fits: leave the full page up long enough to read, then go on from its
         # last two rows, the way a pager does. Nothing scrolls past unread.
         while len(rows) - self.first > ROWS:
@@ -196,13 +192,6 @@ class Screen:
                 im.paste(strip(row), (0, TOP + i * LINE))
             self.cache[key] = im
         return self.cache[key]
-
-    @staticmethod
-    def colour(line):
-        text = ''.join(t for t, _ in line).strip()
-        if len(line) == 1 and line[0][1] == TEXT and text.startswith(SUCCESS):
-            return [(line[0][0], GREEN)]
-        return line
 
 
 def card(lines, ms):
@@ -224,13 +213,8 @@ card([('wslbak', HUGE, BRIGHT, 0), (CARDS['tagline'], LARGE, TEXT, g(26)), (CARD
 steps = recording['steps']
 for number, step in enumerate(steps, 1):
     screen = Screen(step['title'], number, len(steps))
-    if step['shell'] == 'distro':
-        screen.put('me@Debian', GREEN)
-        screen.put(':', TEXT)
-        screen.put('~', BLUE)
-        screen.put('$ ', TEXT)
-    else:
-        screen.put('PS C:\\> ', BLUE)
+    # Every command of the tour is typed in a shell inside WSL.
+    screen.put('$ ', BLUE)
     screen.frame(700)
     command = step['command']
     for i in range(0, len(command), 2):
