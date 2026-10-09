@@ -26,9 +26,9 @@ import (
 // 只把這一小段 tar 送進 distro，由那裡的 GNU tar 解開，擁有者、權限、延伸屬性都保留。
 // 目的地一定是不存在或空的資料夾，完整的路徑會在它底下重建，所以不會蓋掉任何現有的檔案。
 
-// stagedLinkRe 是 restorefiles.sh 回報的暫時連結。它會出現在命令列上，
+// stagingRe 是 restorefiles.sh 回報的暫存資料夾。它會出現在命令列上，
 // 所以只接受我們自己的格式，不照單全收腳本印出來的東西。
-var stagedLinkRe = regexp.MustCompile(`^/(run|dev/shm|tmp)/wslbak-[0-9a-f]{16}$`)
+var stagingRe = regexp.MustCompile(`^/\.wslbak-restore-[0-9a-f]{16}$`)
 
 // tarPathRe 是 restorefiles.sh 回報的 tar 的位置。它也會出現在命令列上，同樣只接受單純的絕對路徑。
 var tarPathRe = regexp.MustCompile(`^(/[A-Za-z0-9_.+-]+){1,12}/tar$`)
@@ -132,10 +132,10 @@ func validInto(p string) bool {
 	return true
 }
 
-// extractArgs 是在 distro 裡解開檔案用的命令列。除了我們自己產生的連結與檢查過的 tar 位置以外，全部是固定的字。
-func extractArgs(distro, tar, link string, dropped []string) []string {
+// extractArgs 是在 distro 裡解開檔案用的命令列。除了我們自己產生的暫存資料夾與檢查過的 tar 位置以外，全部是固定的字。
+func extractArgs(distro, tar, staging string, dropped []string) []string {
 	args := []string{"-d", distro, "-u", "root", "-e", "env", "LC_ALL=C", tar,
-		"--extract", "--file=-", "--directory=" + link,
+		"--extract", "--file=-", "--directory=" + staging,
 		"--numeric-owner", "--same-owner", "--same-permissions",
 		// 目的地是空的，本來就沒有東西可以蓋；這個選項確保萬一有，也是報錯而不是覆蓋。
 		"--keep-old-files"}
@@ -157,6 +157,9 @@ func prepareError(code string, target string) error {
 		return fmt.Errorf(T.PathTargetNotDir, target)
 	case "no-parent":
 		return fmt.Errorf(T.PathTargetNoParent, target)
+	}
+	if windowsPathRe.MatchString(target) {
+		return fmt.Errorf(T.WindowsPathGiven, target)
 	}
 	return fmt.Errorf(T.PathPrepareFailed, target, code)
 }
@@ -233,30 +236,30 @@ func cmdRestorePath(opts options) int {
 		}
 	}
 
-	// 1. 在 distro 裡準備目的地，並拿到指向它的暫時連結。
+	// 1. 在 distro 裡檢查目的地，並建立只有 root 進得去的暫存資料夾。
 	var token [8]byte
 	if _, err := rand.Read(token[:]); err != nil {
 		return fail(err)
 	}
-	out, err := runInDistro(d.Name, withVars(restoreFilesScript,
-		scriptVar{"WSLBAK_TARGET", opts.into},
-		scriptVar{"WSLBAK_TOKEN", hex.EncodeToString(token[:])},
-	), time.Minute)
-	rows := parseProto(decodeWSLText(out))
+	step := func(name string, limit time.Duration) ([][]string, []byte, error) {
+		out, err := runInDistro(d.Name, withVars(restoreFilesScript,
+			scriptVar{"WSLBAK_STEP", name},
+			scriptVar{"WSLBAK_TARGET", opts.into},
+			scriptVar{"WSLBAK_TOKEN", hex.EncodeToString(token[:])},
+		), limit)
+		return parseProto(decodeWSLText(out)), out, err
+	}
+	rows, out, err := step("prepare", time.Minute)
 	if f, ok := protoValue(rows, "error"); ok && len(f) > 0 {
 		return fail(prepareError(f[0], opts.into))
 	}
 	staged, _ := protoValue(rows, "staged")
-	if _, done := protoValue(rows, "done"); !done || len(staged) != 1 || !stagedLinkRe.MatchString(staged[0]) {
+	if _, done := protoValue(rows, "done"); !done || len(staged) != 1 || !stagingRe.MatchString(staged[0]) {
 		logf("restore --path: preparing %s in %s failed: %v: %s", opts.into, d.Name, err, firstLine(decodeWSLText(out)))
 		return fail(prepareError("unexpected", opts.into))
 	}
-	link := staged[0]
+	staging := staged[0]
 	reportedTar, _ := protoValue(rows, "tar")
-	defer func() {
-		// 把暫時的連結拿掉。經由同一份腳本來做：直接執行 rm 的話，工具不在一般位置的 distro（NixOS）找不到它。
-		runInDistro(d.Name, withVars(restoreFilesScript, scriptVar{"WSLBAK_REMOVE", link}), 30*time.Second)
-	}()
 
 	// 2. 讀備份檔、濾出選中的項目、送進 distro 解開。
 	fmt.Println(T.PathExtracting)
@@ -275,7 +278,7 @@ func cmdRestorePath(opts options) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), importTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, system32("wsl.exe"), extractArgs(d.Name, tarProgram(reportedTar), link, m.Dropped)...)
+	cmd := exec.CommandContext(ctx, system32("wsl.exe"), extractArgs(d.Name, tarProgram(reportedTar), staging, m.Dropped)...)
 	cmd.Dir = systemRoot()
 	cmd.Env = append(os.Environ(), "WSL_UTF8=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
@@ -317,16 +320,29 @@ func cmdRestorePath(opts options) int {
 	close(stop)
 	bar.clear()
 
-	detail := firstLine(tarOut.String())
+	var problem error
 	switch {
 	case runErr != nil:
 		logf("restore --path: tar in %s failed: %v: %s", d.Name, runErr, tarOut.String())
-		return fail(fmt.Errorf(T.PathFailed, detail))
+		problem = fmt.Errorf(T.PathFailed, firstLine(tarOut.String()))
 	case walkErr != nil:
 		logf("restore --path: reading %s failed: %v", m.Archive, walkErr)
-		return fail(fmt.Errorf(T.RestoreCorrupt, m.Archive))
+		problem = fmt.Errorf(T.RestoreCorrupt, m.Archive)
 	}
-	// 3. 整個備份檔都讀過了，順便確認它和備份當時一樣。
+	// 3. 把暫存資料夾搬到目的地。解開失敗時也搬：使用者看得到解出了多少，暫存資料夾也不會留在根目錄。
+	testHoldBeforeMove()
+	rows, out, err = step("finish", 10*time.Minute)
+	if _, done := protoValue(rows, "done"); !done {
+		logf("restore --path: moving %s to %s in %s failed: %v: %s", staging, opts.into, d.Name, err, firstLine(decodeWSLText(out)))
+		if problem != nil {
+			fmt.Fprintln(os.Stderr, red(fmt.Sprintf(T.ErrorLine, problem.Error())))
+		}
+		return fail(fmt.Errorf(T.PathMoveFailed, opts.into, staging))
+	}
+	if problem != nil {
+		return fail(problem)
+	}
+	// 4. 整個備份檔都讀過了，順便確認它和備份當時一樣。
 	if _, err := io.Copy(io.Discard, hashed); err != nil || hex.EncodeToString(sum.Sum(nil)) != m.SHA256 {
 		fmt.Fprintln(os.Stderr, yellow(fmt.Sprintf(T.PathArchiveChanged, m.Archive)))
 		return 2

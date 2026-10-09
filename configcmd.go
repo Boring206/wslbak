@@ -3,11 +3,14 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/sys/windows"
 )
 
 // config 指令：不帶旗標時顯示目前的設定，帶旗標時修改，不用自己去編輯 JSON。
@@ -173,7 +176,7 @@ func printSettings(cfg *config) {
 }
 
 func cmdConfig(opts options) int {
-	if !anyGiven(opts, settingFlags) {
+	if !anyGiven(opts, settingFlags) && !opts.private {
 		cfg, err := loadConfig()
 		if err != nil {
 			return fail(err)
@@ -196,6 +199,11 @@ func cmdConfig(opts options) int {
 	}
 	if cfg == nil || len(cfg.Distros) == 0 {
 		return fail(errors.New(T.NotSetUp))
+	}
+	if opts.private {
+		if code := makePrivate(cfg, opts.dryRun); code != 0 || !anyGiven(opts, settingFlags) {
+			return code
+		}
 	}
 	distro := ""
 	if anyGiven(opts, perDistroFlags) {
@@ -272,4 +280,87 @@ func configuredNames(cfg *config, distro string) (string, error) {
 	}
 	sort.Strings(names)
 	return "", fmt.Errorf(T.WhichDistro, strings.Join(names, T.ListSep))
+}
+
+// privateSDDL 是「只有這個帳號（加上系統與系統管理員）能存取」的權限設定，不繼承上層，並傳給底下所有東西。
+func privateSDDL(sid string) string {
+	return "D:PAI(A;OICI;FA;;;" + sid + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+}
+
+// foreignEntries 找出備份資料夾裡不是 wslbak 放的東西。ours 回報一個子資料夾是不是某個 distro 的備份。
+func foreignEntries(names []string, isDir func(string) bool, ours func(string) bool) []string {
+	var foreign []string
+	for _, name := range names {
+		switch {
+		case strings.EqualFold(name, installedCLI), strings.EqualFold(name, kitReadme):
+		case isDir(name) && ours(name):
+		default:
+			foreign = append(foreign, name)
+		}
+	}
+	return foreign
+}
+
+// makePrivate 把備份資料夾的權限收緊成只有這個帳號能存取。
+// 只動完全屬於 wslbak 的資料夾：裡面有別的東西時，改權限會連那些東西一起改，那不是我們該決定的。
+func makePrivate(cfg *config, dryRun bool) int {
+	sid, err := currentSID()
+	if err != nil {
+		return fail(err)
+	}
+	configured := map[string]map[string]bool{}
+	var roots []string
+	for _, dc := range cfg.Distros {
+		key := normPath(dc.Dest)
+		if configured[key] == nil {
+			configured[key] = map[string]bool{}
+			roots = append(roots, dc.Dest)
+		}
+		configured[key][strings.ToLower(dc.ID)] = true
+	}
+	for _, root := range roots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			return fail(fmt.Errorf(T.PrivateFailed, root, err))
+		}
+		names := make([]string, len(entries))
+		dirs := map[string]bool{}
+		for i, e := range entries {
+			names[i] = e.Name()
+			dirs[e.Name()] = e.IsDir()
+		}
+		foreign := foreignEntries(names, func(n string) bool { return dirs[n] }, func(n string) bool {
+			return configured[normPath(root)][strings.ToLower(n)] || len(listBackups(filepath.Join(root, n))) > 0
+		})
+		if len(foreign) > 0 {
+			return fail(fmt.Errorf(T.PrivateForeign, root, strings.Join(foreign[:min(len(foreign), 5)], T.ListSep)))
+		}
+		if dryRun {
+			fmt.Printf(T.PrivatePlan+"\n", root)
+			continue
+		}
+		sd, err := windows.SecurityDescriptorFromString(privateSDDL(sid))
+		if err != nil {
+			return fail(fmt.Errorf(T.PrivateFailed, root, err))
+		}
+		dacl, _, err := sd.DACL()
+		if err != nil {
+			return fail(fmt.Errorf(T.PrivateFailed, root, err))
+		}
+		if err := windows.SetNamedSecurityInfo(root, windows.SE_FILE_OBJECT,
+			windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
+			return fail(fmt.Errorf(T.PrivateFailed, root, err))
+		}
+		if othersCanRead(folderSDDL(root)) {
+			return fail(fmt.Errorf(T.PrivateStillShared, root))
+		}
+		logf("config --private: %s is now restricted to %s, SYSTEM and Administrators", root, sid)
+		fmt.Println(green(fmt.Sprintf(T.PrivateDone, root)))
+	}
+	if dryRun {
+		fmt.Println(dim(T.DryRunNothingDone))
+	} else {
+		fmt.Println(T.PrivateNote)
+	}
+	return 0
 }

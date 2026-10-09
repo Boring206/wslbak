@@ -21,6 +21,7 @@ First release.
 - `wslbak doctor` checks WSL, each distro, Windows security settings, antivirus, the schedule,
   destinations and free space, points out large caches that could be excluded, and says when other
   accounts on the PC can read the backup folder (backups are not encrypted).
+- `wslbak config --private` restricts the backup folder to your own account.
 - `wslbak list`, `status`, `verify` and `uninstall`; `--dry-run` on every command that changes something.
 - A Windows notification when a backup fails or cannot be verified, and optionally a webhook (ntfy,
   Discord, Slack). Notifications never contain file names.

@@ -21,4 +21,11 @@ echo
 # the small ones.
 find /usr -xdev -type f -printf '%p|%s|%m|%U:%G\n' | sort | sha256sum
 find /usr -xdev ! -type f -printf '%p|%y|%m|%U:%G|%l\n' | sort | sha256sum
-find /usr/bin /etc/passwd /etc/group -xdev -type f -size -512k -print0 | sort -z | xargs -0 sha256sum | sha256sum
+# NixOS writes /etc/passwd and /etc/group anew every time it starts, so there they would
+# differ between any two starts of the same distro, backup or no backup.
+if [ -e /etc/NIXOS ]; then
+	set -- /usr/bin
+else
+	set -- /usr/bin /etc/passwd /etc/group
+fi
+find "$@" -xdev -type f -size -512k -print0 | sort -z | xargs -0 sha256sum | sha256sum

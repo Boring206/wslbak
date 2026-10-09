@@ -121,6 +121,9 @@ func cmdFiles(opts options) int {
 		return 0
 	}
 
+	if windowsPathRe.MatchString(opts.target) {
+		return fail(fmt.Errorf(T.WindowsPathGiven, opts.target))
+	}
 	target, err := normalizeMemberPath(opts.target)
 	if opts.target == "" {
 		target, err = ".", nil

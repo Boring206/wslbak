@@ -323,6 +323,12 @@ type catalog struct {
 	DocDestOK           string // 資料夾, 磁碟, 可用空間
 	DocDestShared       string // 資料夾
 	DocDestSharedFix    string
+	PrivatePlan         string // 資料夾
+	PrivateDone         string // 資料夾
+	PrivateForeign      string // 資料夾, 名稱
+	PrivateFailed       string // 資料夾, 錯誤
+	PrivateStillShared  string // 資料夾
+	PrivateNote         string
 	DocDestMissing      string // 資料夾
 	DocDestMissingFix   string
 	DocDestLow          string // 磁碟, 可用空間, 需要
@@ -367,6 +373,8 @@ type catalog struct {
 	PathExtracting     string
 	ProgressScanning   string
 	PathFailed         string // 細節
+	PathMoveFailed     string // 目的地, 暫存資料夾
+	WindowsPathGiven   string // 值
 	PathArchiveChanged string // 檔名
 	PathDone           string // 數量, 資料夾
 	PathExplorer       string // 路徑
@@ -413,6 +421,7 @@ var zhTW = catalog{
       --exclude <樣式>     config：多排除一個路徑樣式，例如 /home/*/Downloads/*（可重複）
       --unexclude <樣式>   config：取消一個排除（可重複）
       --enable, --disable  config：啟用或停用某個 distro 的備份
+      --private            config：把備份資料夾收緊成只有你的帳號能存取
       --no-verify          run：這次不試還原
       --find <文字>        files：列出檔名或路徑包含這段文字的項目
       --name <名稱>        restore：還原出來的 distro 要叫什麼
@@ -625,7 +634,13 @@ var zhTW = catalog{
 	DocInstalled:        "排程用的程式在 %s，檔案完好",
 	DocDestOK:           "%[1]s 可以使用，%[2]s 還有 %[3]s",
 	DocDestShared:       "這台電腦上的其他帳號也讀得到 %s。備份沒有加密，裡面是 distro 的全部檔案，金鑰也在內；只有你一個人用這台電腦的話可以不管。",
-	DocDestSharedFix:    "和別人共用電腦時：把這個資料夾的權限改成只有你能存取，或把備份放到只有你能用的位置",
+	DocDestSharedFix:    "和別人共用電腦時，收緊成只有你的帳號能存取：wslbak config --private",
+	PrivatePlan:         "會把 %s 的權限改成只有你的帳號能存取（另外保留系統與系統管理員）。",
+	PrivateDone:         "%s 現在只有你的帳號打得開（另外保留系統與系統管理員）。",
+	PrivateForeign:      "%[1]s 裡還有不是 wslbak 放的東西（%[2]s），所以不去動它的權限。請把備份改放到專用的資料夾，或自己調整權限。",
+	PrivateFailed:       "無法更改 %[1]s 的權限：%[2]v",
+	PrivateStillShared:  "已經設定 %s 的權限，但其他帳號仍然讀得到；這個磁碟可能不支援權限設定。",
+	PrivateNote:         "注意：重灌 Windows 之後，新的帳號不在名單上。還原之前，先在檔案總管打開那個資料夾並同意它的詢問，或用「以系統管理員身分執行」的終端機。",
 	DocDestMissing:      "連不到 %s",
 	DocDestMissingFix:   "如果是外接碟或網路磁碟，接上之後再試",
 	DocDestLow:          "%[1]s 只剩 %[2]s，下一份備份大約需要 %[3]s",
@@ -666,6 +681,8 @@ var zhTW = catalog{
 	PathExtracting:      "正在讀取備份並取回檔案…",
 	ProgressScanning:    "已讀取",
 	PathFailed:          "取回失敗：%s",
+	PathMoveFailed:      "檔案已經從備份讀出來，但沒辦法放到 %[1]s（那個位置在這段時間被換成了別的東西？）。它們留在 distro 裡的 %[2]s，只有 root 打得開。",
+	WindowsPathGiven:    "%s 是 Windows 的路徑，這裡要的是 distro 裡的路徑，例如 /home/me。在 Git Bash 裡，斜線開頭的參數會在 wslbak 收到之前被改寫：請在指令前面加上 MSYS_NO_PATHCONV=1，或改用 PowerShell、cmd 或 WSL 的 shell。",
 	PathArchiveChanged:  "檔案已經取回，但 %s 和備份當時不一樣了（可能已損壞），取回的內容不一定正確。建議改用另一份備份再取一次。",
 	PathDone:            "已取回 %[1]d 個項目到 %[2]s",
 	PathExplorer:        "在檔案總管可以從這裡打開：%s",
@@ -737,6 +754,7 @@ Options:
       --exclude <pattern>    config: exclude one more path pattern, such as /home/*/Downloads/* (repeatable)
       --unexclude <pattern>  config: stop excluding a pattern (repeatable)
       --enable, --disable    config: turn backups of one distro on or off
+      --private              config: let only your account open the backup folder
       --no-verify            run: skip the test restore this time
       --find <text>          files: list entries whose name or path contains this text
       --name <name>          restore: name of the restored distro
@@ -949,7 +967,13 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	DocInstalled:        "The program the schedule runs is in %s and is intact",
 	DocDestOK:           "%[1]s is usable; %[2]s has %[3]s free",
 	DocDestShared:       "Other accounts on this PC can read %s. Backups are not encrypted and hold every file of the distro, keys included; if you are the only one using this PC, nothing needs doing.",
-	DocDestSharedFix:    "On a shared PC: restrict that folder to your own account, or keep backups somewhere only you can reach",
+	DocDestSharedFix:    "On a shared PC, to keep it to your account: wslbak config --private",
+	PrivatePlan:         "Would restrict %s to your account (plus SYSTEM and Administrators).",
+	PrivateDone:         "%s can now only be opened by your account (plus SYSTEM and Administrators).",
+	PrivateForeign:      "%[1]s also holds things that wslbak did not put there (%[2]s), so its permissions are left alone. Keep the backups in a folder of their own, or change the permissions yourself.",
+	PrivateFailed:       "Could not change the permissions of %[1]s: %[2]v",
+	PrivateStillShared:  "The permissions of %s were set, but other accounts can still read it; this drive may not support permissions.",
+	PrivateNote:         "Note: after reinstalling Windows, your new account will not be on that list. Before restoring, open the folder in Explorer once and confirm its question, or use a terminal run as administrator.",
 	DocDestMissing:      "%s cannot be reached",
 	DocDestMissingFix:   "If it is on an external or network drive, connect it and try again",
 	DocDestLow:          "%[1]s has only %[2]s free; the next backup needs about %[3]s",
@@ -990,6 +1014,8 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	PathExtracting:      "Reading the backup and bringing the files back…",
 	ProgressScanning:    "read",
 	PathFailed:          "Bringing the files back failed: %s",
+	PathMoveFailed:      "The files were read from the backup, but could not be put in place at %[1]s (was something else put there in the meantime?). They are in %[2]s inside the distro, which only root can open.",
+	WindowsPathGiven:    "%s is a Windows path, but this needs a path inside the distro, such as /home/me. In Git Bash, arguments that start with / are rewritten before wslbak sees them: put MSYS_NO_PATHCONV=1 in front of the command, or use PowerShell, cmd or a WSL shell.",
 	PathArchiveChanged:  "The files were brought back, but %s is no longer what was written (it may be damaged), so they may not be correct. Try again from another backup.",
 	PathDone:            "Brought back %[1]d item(s) into %[2]s",
 	PathExplorer:        "In Explorer it is here: %s",

@@ -1116,7 +1116,7 @@ func TestSelection(t *testing.T) {
 }
 
 func TestExtractArgs(t *testing.T) {
-	link := "/run/wslbak-0123456789abcdef"
+	link := "/.wslbak-restore-0123456789abcdef"
 	args := extractArgs("Ubuntu", "tar", link, nil)
 	joined := strings.Join(args, " ")
 	for _, want := range []string{"-d Ubuntu -u root -e env LC_ALL=C tar", "--extract", "--file=-", "--directory=" + link,
@@ -1134,18 +1134,18 @@ func TestExtractArgs(t *testing.T) {
 	}
 	// 腳本回報的連結要是我們自己的格式才會被用在命令列上。
 	for value, want := range map[string]bool{
-		"/run/wslbak-0123456789abcdef":         true,
-		"/dev/shm/wslbak-0123456789abcdef":     true,
-		"/tmp/wslbak-0123456789abcdef":         true,
-		"/run/wslbak-0123456789abcdef/../etc":  false,
-		"/run/wslbak-0123456789ABCDEF":         false,
-		"/home/me/wslbak-0123456789abcdef":     false,
-		"/run/wslbak-0123456789abcdef --force": false,
-		"--directory=/etc":                     false,
-		"":                                     false,
+		"/.wslbak-restore-0123456789abcdef":         true,
+		"/tmp/.wslbak-restore-0123456789abcdef":     false,
+		"/.wslbak-restore-0123456789abcde":          false,
+		"/.wslbak-restore-0123456789abcdef/../etc":  false,
+		"/.wslbak-restore-0123456789ABCDEF":         false,
+		"/home/me/wslbak-0123456789abcdef":          false,
+		"/.wslbak-restore-0123456789abcdef --force": false,
+		"--directory=/etc":                          false,
+		"":                                          false,
 	} {
-		if stagedLinkRe.MatchString(value) != want {
-			t.Errorf("stagedLinkRe.MatchString(%q) should be %v", value, want)
+		if stagingRe.MatchString(value) != want {
+			t.Errorf("stagingRe.MatchString(%q) should be %v", value, want)
 		}
 	}
 }
@@ -1357,8 +1357,47 @@ func TestTarProgram(t *testing.T) {
 			t.Errorf("tarProgram(%q) = %q, want %q", c.reported, got, c.want)
 		}
 	}
-	args := extractArgs("NixOS", "/run/current-system/sw/bin/tar", "/run/wslbak-0123456789abcdef", nil)
+	args := extractArgs("NixOS", "/run/current-system/sw/bin/tar", "/.wslbak-restore-0123456789abcdef", nil)
 	if !slices.Contains(args, "/run/current-system/sw/bin/tar") || slices.Contains(args, "tar") {
 		t.Errorf("the reported tar is not what gets started: %q", args)
+	}
+}
+
+// 該給 distro 裡的路徑卻收到 Windows 路徑（Git Bash 改寫過的）時，要說得出原因與解法。
+func TestWindowsPathGiven(t *testing.T) {
+	defer func(old *catalog) { T = old }(T)
+	T = &enUS
+	for _, args := range [][]string{
+		{"restore", "--path", "C:/Program Files/Git/home/me/notes.md", "--into", "/home/me/back"},
+		{"restore", "--path", "/home/me/notes.md", "--into", `C:\Users\me\AppData\Local\Temp\back`},
+		{"config", "--exclude", "C:/Program Files/Git/home/me/Downloads"},
+	} {
+		_, err := parseArgs(args)
+		if err == nil || !strings.Contains(err.Error(), "MSYS_NO_PATHCONV") {
+			t.Errorf("%q: error = %v, want one that explains Git Bash", args, err)
+		}
+	}
+	for _, ok := range []string{"/home/me", "//home/me", "./home/me", "relative/C:/x"} {
+		if windowsPathRe.MatchString(ok) {
+			t.Errorf("%q is not a Windows path", ok)
+		}
+	}
+}
+
+// config --private：權限設定的寫法，以及「資料夾裡有別人的東西就不動」的判斷。
+func TestPrivate(t *testing.T) {
+	sddl := privateSDDL("S-1-5-21-1-2-3-1001")
+	if othersCanRead(sddl) {
+		t.Errorf("the private permissions still let other accounts in: %s", sddl)
+	}
+	if !strings.HasPrefix(sddl, "D:P") || !strings.Contains(sddl, ";;;S-1-5-21-1-2-3-1001)") {
+		t.Errorf("unexpected permissions: %s", sddl)
+	}
+	dirs := map[string]bool{"Ubuntu": true, "old-distro": true, "Photos": true}
+	ours := map[string]bool{"Ubuntu": true, "old-distro": true}
+	got := foreignEntries([]string{"Ubuntu", "old-distro", "WSLBAK.EXE", "README-RESTORE.txt", "Photos", "notes.txt"},
+		func(n string) bool { return dirs[n] }, func(n string) bool { return ours[n] })
+	if want := []string{"Photos", "notes.txt"}; !slices.Equal(got, want) {
+		t.Errorf("foreign entries = %q, want %q", got, want)
 	}
 }
