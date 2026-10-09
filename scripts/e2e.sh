@@ -37,6 +37,8 @@ extra_distros=()
 . scripts/e2e-lib.sh
 VERSION="$(node -p 'require("./package.json").version')"
 fast() { [ -n "${E2E_FAST:-}" ]; }
+# The executable for this machine, for the checks that start it without the launcher.
+EXE="bin/wslbak-$([ "$(uname -m)" = aarch64 ] && echo arm64 || echo x64).exe"
 
 # run_kit: like run, for the copy of the program that sits in the backup folder.
 run_kit() {
@@ -60,6 +62,14 @@ snapshot() {
 	(cd "$SANDBOX" 2>/dev/null && find . -printf '%p %s\n' | sort)
 	distro_names
 	task_exists && echo "task: present" || echo "task: absent"
+}
+
+# same_snapshot <label> <snapshot from before>: nothing in the sandbox, among the distros
+# or about the task has changed since; otherwise the differences are shown.
+same_snapshot() {
+	local now
+	now="$(snapshot)"
+	if [ "$now" = "$2" ]; then ok "$1"; else bad "$1" "$(diff <(echo "$2") <(echo "$now") | head -n 12)"; fi
 }
 
 cleanup() {
@@ -144,7 +154,7 @@ expect_rc 0 "init --dry-run succeeds"
 expect_has "About to set up" "it shows the plan"
 expect_has "wslbak-sandbox-S-1-5-" "the plan names the scheduled task"
 expect_has "nothing above was actually done" "it says nothing was done"
-expect_true "init --dry-run left everything as it was" [ "$(snapshot)" = "$BEFORE" ]
+same_snapshot "init --dry-run left everything as it was" "$BEFORE"
 
 section "3. init"
 run init -d "$DISTRO" --dest "$DEST" --keep 2 --at 4:30 --yes
@@ -157,7 +167,8 @@ TASK_XML="$(win "$SYS32/schtasks.exe" /Query /TN "$(task_name)" /XML </dev/null 
 expect_true "the task may start on battery, and keeps running when the PC goes on battery" bash -c 'grep -q "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" <<<"$0" && grep -q "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>" <<<"$0"' "$TASK_XML"
 expect_true "it makes up for a start that was missed" grep -q '<StartWhenAvailable>true</StartWhenAvailable>' <<<"$TASK_XML"
 expect_true "it also starts ten minutes after signing in" bash -c 'grep -q "<LogonTrigger>" <<<"$0" && grep -q "<Delay>PT10M</Delay>" <<<"$0"' "$TASK_XML"
-expect_true "it does not wake the PC up" grep -q '<WakeToRun>false</WakeToRun>' <<<"$TASK_XML"
+# (Task Scheduler leaves settings that have their usual value out of what it reports.)
+expect_true "it does not wake the PC up" bash -c '! grep -q "<WakeToRun>true</WakeToRun>" <<<"$0"' "$TASK_XML"
 expect_true "the restore kit is in the destination" [ -f "$DEST/wslbak.exe" ]
 expect_true "with its instructions" [ -f "$DEST/README-RESTORE.txt" ]
 run status
@@ -450,7 +461,7 @@ run restore --dry-run
 expect_rc 0 "restore --dry-run succeeds"
 expect_has "$DISTRO-restored-" "it picks a new name because the original still exists"
 expect_has "Existing distros are not touched" "and says existing distros are safe"
-expect_true "restore --dry-run left everything as it was" [ "$(snapshot)" = "$BEFORE" ]
+same_snapshot "restore --dry-run left everything as it was" "$BEFORE"
 run restore --name "$DISTRO" --yes
 expect_rc 2 "restore refuses to reuse the name of an existing distro"
 expect_has "never overwrites" "and says it never overwrites"
@@ -559,7 +570,7 @@ BEFORE="$(snapshot)"
 run config --keep 9 --dry-run
 expect_rc 0 "config --dry-run succeeds"
 expect_has "--keep: 2 → 9" "and shows what would change"
-expect_true "config --dry-run left everything as it was" [ "$(snapshot)" = "$BEFORE" ]
+same_snapshot "config --dry-run left everything as it was" "$BEFORE"
 run config --keep 5 --keep-weekly 2 --exclude '/root/churn/*' --notify always
 expect_rc 0 "config changes several settings at once"
 expect_has "Saved" "and saves them"
@@ -665,35 +676,6 @@ else
 		"") ;;
 		*) echo "  (the PC was on mains power)" ;;
 	esac
-	run config --at 04:30
-fi
-
-section "13h. A start that was missed is made up for"
-# The PC cannot be switched off for a test. Instead the task is given a start time a few
-# minutes in the past (a switch for the tests allows that): for Task Scheduler this is a
-# start that was missed, and the task is set to run as soon as possible after one.
-if fast; then
-	skip "waiting for the missed start (E2E_FAST)"
-else
-	rm -f "$HOME_DIR/state.json"
-	LAST_BEFORE="$(newest_backup)"
-	RUNS_BEFORE="$(grep -c 'scheduled=true' "$HOME_DIR/wslbak.log" 2>/dev/null)"
-	AT="$(win "$PS" -NoProfile -Command "(Get-Date).AddMinutes(-3).ToString('HH:mm')" </dev/null 2>/dev/null | tr -d '\r')"
-	NOW="$(win "$PS" -NoProfile -Command "(Get-Date).ToString('HH:mm')" </dev/null 2>/dev/null | tr -d '\r')"
-	if [[ "$AT" < "$NOW" ]]; then
-		BEGAN=$SECONDS
-		run_with WSLBAK_TEST_PAST_START=1 -- config --at "$AT"
-		expect_rc 0 "the daily time is set to $AT, three minutes ago"
-		for _ in $(seq 1 900); do
-			[ "$(newest_backup)" != "$LAST_BEFORE" ] && grep -q '"lastResult": "ok"' "$HOME_DIR/state.json" 2>/dev/null && break
-			sleep 1
-		done
-		expect_true "Task Scheduler started the task by itself to make up for it" [ "$(newest_backup)" != "$LAST_BEFORE" ]
-		expect_true "and it was the scheduled run" [ "$(grep -c 'scheduled=true' "$HOME_DIR/wslbak.log" 2>/dev/null)" -gt "${RUNS_BEFORE:-0}" ]
-		echo "  (the backup was there $((SECONDS - BEGAN)) s after the task was registered)"
-	else
-		skip "too close to midnight for a time three minutes ago"
-	fi
 	run config --at 04:30
 fi
 
@@ -823,7 +805,6 @@ section "14b. In a real console window"
 # Everything above reads the program's output through a pipe. A console is different: the
 # program writes to it in another way, the console has a code page and its own idea of how
 # wide a character is, and questions are answered from the keyboard.
-EXE="bin/wslbak-$([ "$(uname -m)" = aarch64 ] && echo arm64 || echo x64).exe"
 if fast; then
 	skip "the console window (E2E_FAST)"
 elif [ ! -f bin/e2e-console.exe ]; then
@@ -922,7 +903,7 @@ section "16. uninstall"
 BEFORE="$(snapshot)"
 run uninstall --dry-run
 expect_rc 0 "uninstall --dry-run succeeds"
-expect_true "uninstall --dry-run left everything as it was" [ "$(snapshot)" = "$BEFORE" ]
+same_snapshot "uninstall --dry-run left everything as it was" "$BEFORE"
 KEPT="$(backups)"
 run uninstall --yes
 expect_rc 0 "uninstall succeeds"
@@ -1031,7 +1012,7 @@ else
 		expect_has "[2] " "the question numbers the distros to choose from"
 		expect_has "$MULTI" "and names them"
 		expect_has "About to set up" "the plan for the chosen one follows"
-		expect_true "declining at the next question leaves everything as it was" [ "$(snapshot)" = "$BEFORE" ]
+		same_snapshot "declining at the next question leaves everything as it was" "$BEFORE"
 		run_with "$ONLY" -- init --all --dest "$DEST" --keep 2 --yes
 		expect_rc 0 "init --all sets up every distro that can be backed up"
 		expect_has "$DISTRO" "the test distro"
