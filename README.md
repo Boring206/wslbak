@@ -206,6 +206,9 @@ wslbak therefore appends its own `/etc/wsl.conf` to the end of the stream it imp
 disk is not altered) that turns off systemd, boot commands, Windows drive mounts and interop, and it
 refuses to start the copy unless that file is the one that ended up in place.
 
+WSL makes a Start Menu folder for every distro it imports and does not always take it away again;
+wslbak removes the empty one that its temporary distro leaves behind.
+
 Only verified backups count towards `--keep`. Backups that could not be verified are kept separately,
 at most two, so a run of failures never pushes out your good backups.
 

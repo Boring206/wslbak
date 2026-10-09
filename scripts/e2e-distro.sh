@@ -63,6 +63,15 @@ win() {
 # Windows when it is listed in WSLENV.
 wsl_exe() { WSL_UTF8=1 WSLENV="${WSLENV:+$WSLENV:}WSL_UTF8" win "$WSL" "$@"; }
 
+# start_menu prints the current user's Start Menu "Programs" folder. WSL makes a folder
+# there for every distro it installs or imports, and leaves it behind, empty, when the
+# distro is unregistered.
+start_menu() {
+  local appdata
+  appdata="$(win "$SYS32/cmd.exe" /c 'echo %APPDATA%' 2>/dev/null | tr -d '\r')"
+  printf '%s/Microsoft/Windows/Start Menu/Programs' "$(wslpath -u "$appdata")"
+}
+
 sandbox_win() {
   local base
   base="$(win "$SYS32/cmd.exe" /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r')"
@@ -183,6 +192,8 @@ unregister_guarded() {
     fi
     wsl_exe --unregister "$name" >&2 || return 1
   fi
+  # rmdir only removes an empty folder.
+  rmdir "$(start_menu)/$name" 2>/dev/null
   dir="$(wslpath -u "$expected")"
   # rmdir only removes an empty folder: unregistering already deleted the virtual disk.
   if [ -d "$dir" ]; then rmdir "$dir" 2>/dev/null || echo "left in place (not empty): $expected" >&2; fi
