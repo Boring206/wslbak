@@ -135,6 +135,7 @@ type stderrLog struct {
 	mu     sync.Mutex
 	proto  [][]string
 	tar    []string
+	notes  []string // wsl.exe 自己的警告
 	totals int64
 }
 
@@ -147,6 +148,12 @@ func (l *stderrLog) add(line string) {
 	}
 	if m := totalsRe.FindStringSubmatch(line); m != nil {
 		l.totals, _ = strconv.ParseInt(m[1], 10, 64)
+		return
+	}
+	// wsl.exe 自己的警告（例如「無法啟動 systemd 的使用者工作階段」）也寫在 stderr，
+	// 內容會被翻譯，但一律以「wsl: 」開頭。它們不是 tar 的訊息，不能拿來判斷備份成不成功。
+	if strings.HasPrefix(line, "wsl: ") {
+		l.notes = append(l.notes, line)
 		return
 	}
 	// tar 可能對同一個樹印出非常多行，只留前面一些，其餘的只計數。
@@ -392,6 +399,9 @@ func runBackup(req backupRequest) (*manifest, error) {
 		case "skipped-mount":
 			m.SkippedMounts = append(m.SkippedMounts, strings.Join(row[1:], " "))
 		}
+	}
+	for _, note := range stderr.notes {
+		logf("wsl.exe: %s", note)
 	}
 	m.WarningCount = len(warnings)
 	m.Warnings = warnings[:min(len(warnings), maxWarnings)]

@@ -117,6 +117,12 @@ func TestScriptsShape(t *testing.T) {
 		if regexp.MustCompile(`\brm\s+-[a-zA-Z]*[rR]`).MatchString(script) {
 			t.Errorf("%s contains a recursive rm", name)
 		}
+		// 腳本只能用 shell 內建的功能與 coreutils：精簡的 distro 沒有 awk（Fedora 的 WSL 映像就沒有），
+		// sed 與 grep 也不保證有。註解不算。
+		code := regexp.MustCompile(`(?m)^\s*#.*$`).ReplaceAllString(script, "")
+		if m := regexp.MustCompile(`\b(awk|gawk|sed|grep|perl|python3?)\b`).FindString(code); m != "" {
+			t.Errorf("%s uses %s, which a minimal distro may not have", name, m)
+		}
 		if strings.Contains(script, "\r") {
 			t.Errorf("%s contains a carriage return", name)
 		}
@@ -1159,5 +1165,28 @@ func TestFirstStart(t *testing.T) {
 	// 月底跨到下個月。
 	if got := firstStart("03:00", time.Date(2026, 10, 31, 12, 0, 0, 0, loc)); got.Format("2006-01-02") != "2026-11-01" {
 		t.Errorf("month end: %v", got)
+	}
+}
+
+// wsl.exe 自己印在 stderr 的警告不是 tar 的訊息。
+func TestStderrLogIgnoresWSLNotes(t *testing.T) {
+	var l stderrLog
+	for _, line := range []string{
+		"wsl: Failed to start the systemd user session for 'root'. See journalctl for more details.",
+		"wsl: 偵測到 localhost Proxy 設定，但未鏡像到 WSL。",
+		"@wslbak\ttar-version\ttar (GNU tar) 1.35",
+		"tar: ./home/me: file changed as we read it",
+		"Total bytes written: 10240 (10KiB, 5.4MiB/s)",
+		"@wslbak\ttar-exit\t1",
+		"@wslbak\tdone",
+	} {
+		l.add(line)
+	}
+	if len(l.notes) != 2 || len(l.tar) != 1 || l.totals != 10240 || len(l.proto) != 3 {
+		t.Errorf("notes=%d tar=%q totals=%d proto=%d", len(l.notes), l.tar, l.totals, len(l.proto))
+	}
+	warnings, fatal := classifyTarStderr(l.tar)
+	if len(warnings) != 1 || len(fatal) != 0 {
+		t.Errorf("warnings=%q fatal=%q", warnings, fatal)
 	}
 }

@@ -6,6 +6,10 @@
 # a throwaway Debian distro (wslbak-e2e-<random>, see scripts/e2e-distro.sh) and a sandbox
 # folder passed with --home, under %LOCALAPPDATA%\wslbak-e2e. The test distro is created
 # on first use and kept for the next run; remove it with: scripts/e2e-distro.sh destroy
+#
+# To test against another distro family, set E2E_DISTRO to a name from
+# `wsl --list --online` (FedoraLinux-44, archlinux, openSUSE-Tumbleweed, …) or to alpine:
+#   E2E_DISTRO=FedoraLinux-44 npm run e2e
 set -u
 
 cd "$(dirname "$0")/.."
@@ -46,11 +50,13 @@ skip() {
 
 # run: run wslbak with stdin at /dev/null; output goes to OUT, exit code to RC.
 run() {
+	ensure_interop
 	OUT="$(timeout 600 "${WB[@]}" "$@" 2>&1 </dev/null | tr -d '\r'; exit "${PIPESTATUS[0]}")"
 	RC=$?
 }
 # run_kit: the same for the copy of the program that sits in the backup folder.
 run_kit() {
+	ensure_interop
 	OUT="$(timeout 600 "$DEST/wslbak.exe" --lang en --home "$(wslpath -w "$SANDBOX/empty-home")" "$@" 2>&1 </dev/null | tr -d '\r'; exit "${PIPESTATUS[0]}")"
 	RC=$?
 }
@@ -69,11 +75,14 @@ expect_true() {
 	if "$@"; then ok "$label"; else bad "$label"; fi
 }
 
+# wsl.exe prints its own warnings (lines starting with "wsl: ") next to the command's
+# output; they are not part of what the command said.
+no_wsl_notes() { tr -d '\r' | grep -v '^wsl: ' || true; }
 # in_distro <distro> <script file>: run a script as root inside a distro.
-in_distro() { win "$WSL" -d "$1" -u root -e sh -s <"$2" 2>&1 | tr -d '\r'; }
+in_distro() { win "$WSL" -d "$1" -u root -e sh -s <"$2" 2>&1 | no_wsl_notes; }
 # sh_in <distro> <commands>: run shell commands as root inside a distro. They travel on
 # stdin, so nothing has to survive wsl.exe's handling of quotes.
-sh_in() { printf '%s\n' "$2" | win "$WSL" -d "$1" -u root -e sh -s 2>&1 | tr -d '\r'; }
+sh_in() { printf '%s\n' "$2" | win "$WSL" -d "$1" -u root -e sh -s 2>&1 | no_wsl_notes; }
 distro_names() { wsl_exe -l -q </dev/null | tr -d '\r' | sed '/^$/d' | sort; }
 registered() { [ -n "$(registered_path "$1")" ]; }
 task_name() {
@@ -128,6 +137,19 @@ else
 		echo "Could not create the test distro (is there network access for wsl --install?)."
 		exit 2
 	fi
+fi
+echo "  testing against $E2E_DISTRO: $(sh_in "$DISTRO" '. /etc/os-release && echo "$PRETTY_NAME"; tar --version 2>&1 | head -n 1' | tr '\n' ' ')"
+# A distro that only has BusyBox tar (Alpine as it comes), or no tar at all (openSUSE
+# Tumbleweed as it comes), must be refused with the reason and the command that fixes it.
+if ! sh_in "$DISTRO" 'tar --version 2>/dev/null' | grep -q 'GNU tar'; then
+	run init -d "$DISTRO" --dest "$DEST" --dry-run
+	expect_rc 2 "a distro without GNU tar is refused"
+	if sh_in "$DISTRO" 'command -v tar' | grep -q tar; then
+		expect_has "not GNU tar" "because its tar is not GNU tar"
+	else
+		expect_has "has no tar installed" "because it has no tar"
+	fi
+	expect_has "apk add tar" "and the command that fixes it is given"
 fi
 SEEDED="$(in_distro "$DISTRO" scripts/e2e-seed.sh | tail -n 1)"
 if [ "$SEEDED" = seeded ]; then ok "planted the test files"; else bad "planting the test files" "$SEEDED"; fi
@@ -213,7 +235,14 @@ run files "$FIRST" /wslbak-fixture
 expect_rc 0 "files lists a folder of a named backup"
 expect_has "plain.txt" "a plain file is listed"
 expect_has "symlink -> plain.txt" "a symbolic link shows its target"
-expect_has "hard2 = /wslbak-fixture/hard1" "a hard link shows what it is linked to"
+# Which of the two names tar met first (and stored as the file) depends on the order of
+# the directory on disk, so find out which one is recorded as the link.
+if grep -qF 'hard2 = /wslbak-fixture/hard1' <<<"$OUT"; then
+	LINKED=hard2 LINK_TARGET=hard1
+else
+	LINKED=hard1 LINK_TARGET=hard2
+fi
+expect_has "$LINKED = /wslbak-fixture/$LINK_TARGET" "a hard link shows what it is linked to"
 expect_has "sparse.bin" "the sparse file is listed"
 expect_has "9.0 GB" "with its full size"
 run files /wslbak-fixture/plain.txt
@@ -253,7 +282,7 @@ readlink symlink
 cat "中文檔名 with space.txt"
 find . -path "./d*" -name "*.txt" | wc -c
 '
-sig() { printf 'set -- %s\n%s\n' "$2" "$FIXTURE_SIG" | win "$WSL" -d "$1" -u root -e sh -s 2>&1 | tr -d '\r'; }
+sig() { printf 'set -- %s\n%s\n' "$2" "$FIXTURE_SIG" | win "$WSL" -d "$1" -u root -e sh -s 2>&1 | no_wsl_notes; }
 WANT="$(sig "$DISTRO" /wslbak-fixture)"
 GOT="$(sig "$DISTRO" "$BACK/wslbak-fixture")"
 if [ -n "$WANT" ] && [ "$WANT" = "$GOT" ]; then
@@ -267,9 +296,9 @@ run restore --path /wslbak-fixture/plain.txt --into "$BACK" --yes
 expect_rc 2 "restore --path refuses a folder that is not empty"
 expect_has "not empty" "and says why"
 # A hard link whose other name is outside the selection: both names must come back.
-run restore --path /wslbak-fixture/hard2 --into "$BACK-link" --yes
+run restore --path "/wslbak-fixture/$LINKED" --into "$BACK-link" --yes
 expect_rc 0 "restore --path brings back a single hard-linked file"
-expect_true "together with the file it is linked to" [ "$(sh_in "$DISTRO" "cd $BACK-link/wslbak-fixture && [ \"\$(stat -c %i hard1)\" = \"\$(stat -c %i hard2)\" ] && cat hard2")" = link ]
+expect_true "together with the file it is linked to" [ "$(sh_in "$DISTRO" "cd $BACK-link/wslbak-fixture && [ \"\$(stat -c %i hard1)\" = \"\$(stat -c %i hard2)\" ] && cat $LINKED")" = link ]
 run restore --path /no/such/file --into "$BACK-none" --yes
 expect_rc 2 "restore --path refuses a path that is not in the backup"
 expect_true "and creates nothing for it" [ -z "$(sh_in "$DISTRO" "ls -d $BACK-none 2>/dev/null")" ]
@@ -327,6 +356,7 @@ run verify 20000101T000000Z
 expect_rc 2 "verify refuses an id that does not exist"
 
 section "7. Only one wslbak at a time"
+ensure_interop
 timeout 600 "${WB[@]}" run </dev/null >"$SANDBOX/background.log" 2>&1 &
 BG=$!
 # Wait until the first one has started reading.

@@ -23,16 +23,31 @@ main() {
 		say "systemd	no"
 	fi
 	# Windows 的磁碟掛進來時，掛載來源是 C:\ 這種樣子。
-	say "windows-drives	$(awk '$3 == "9p" && $1 ~ /^[A-Za-z]:/ { n++ } END { print n + 0 }' /proc/self/mounts)"
+	drives=0
+	while read -r source _mount type _rest; do
+		if [ "$type" = 9p ]; then
+			case $source in
+			[A-Za-z]:*) drives=$((drives + 1)) ;;
+			esac
+		fi
+	done </proc/self/mounts
+	say "windows-drives	$drives"
 	if [ -n "$WSL_INTEROP" ]; then
 		say "interop	yes"
 	else
 		say "interop	no"
 	fi
-	say "wslconf	$(sha256sum /etc/wsl.conf 2>/dev/null | cut -d' ' -f1)"
+	conf_sum=$(sha256sum /etc/wsl.conf 2>/dev/null)
+	say "wslconf	${conf_sum%% *}"
 
 	if [ -n "$WSLBAK_UID" ]; then
-		entry=$(awk -F: -v uid="$WSLBAK_UID" '$3 == uid { print $1 "\t" $6; exit }' /etc/passwd 2>/dev/null)
+		entry=
+		while IFS=: read -r name _pw uid _gid _gecos home _shell; do
+			if [ "$uid" = "$WSLBAK_UID" ]; then
+				entry="$name	$home"
+				break
+			fi
+		done </etc/passwd
 		if [ -z "$entry" ]; then
 			say "user	missing"
 		else
@@ -48,11 +63,20 @@ main() {
 	cd / || exit 4
 	if [ -n "$WSLBAK_SAMPLES" ]; then
 		# 不用 --quiet：busybox 的 sha256sum 沒有這個選項。
-		printf '%s\n' "$WSLBAK_SAMPLES" | sha256sum -c 2>/dev/null | awk '
-			/: OK$/ { ok++; next }
-			{ bad++; if (bad <= 20) print "@wslbak\tsample-bad\t" $0 }
-			END { printf "@wslbak\tsamples\t%d\t%d\n", ok + 0, bad + 0 }
-		'
+		printf '%s\n' "$WSLBAK_SAMPLES" | sha256sum -c 2>/dev/null | {
+			ok=0
+			bad=0
+			while IFS= read -r line; do
+				case $line in
+				*": OK") ok=$((ok + 1)) ;;
+				*)
+					bad=$((bad + 1))
+					[ "$bad" -le 20 ] && say "sample-bad	$line"
+					;;
+				esac
+			done
+			say "samples	$ok	$bad"
+		}
 	fi
 	say "done"
 }

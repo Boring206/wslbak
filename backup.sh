@@ -11,6 +11,12 @@ say() {
 	printf '@wslbak\t%s\n' "$1" >&2
 }
 
+# first_line 印出一段文字的第一行。
+first_line() {
+	printf '%s\n' "${1%%
+*}"
+}
+
 main() {
 	# NixOS 的工具不在預設的 PATH 上。
 	PATH="$PATH:/run/current-system/sw/bin"
@@ -19,7 +25,7 @@ main() {
 
 	root=${WSLBAK_ROOT:-/}
 
-	tar_version=$(tar --version 2>/dev/null | head -n 1)
+	tar_version=$(first_line "$(tar --version 2>/dev/null)")
 	case $tar_version in
 	*"GNU tar"*) ;;
 	*)
@@ -44,17 +50,26 @@ main() {
 	# --one-file-system 會跳過掛在別的磁碟上的目錄。那裡如果是真正的資料（例如獨立的 /home），
 	# 使用者得知道它沒有被備份。和根目錄同一個裝置的掛載點（綁定掛載）不算。
 	if [ "$root" = / ] && [ -r /proc/self/mountinfo ]; then
-		awk '
-			{
-				fs = ""
-				for (i = 7; i <= NF; i++) if ($i == "-") { fs = $(i + 1); break }
-				if ($5 == "/") { rootdev = $3; next }
-				if (fs ~ /^(ext[234]|xfs|btrfs|f2fs|zfs|jfs|reiserfs|bcachefs)$/) { dev[$5] = $3; type[$5] = fs }
-			}
-			END {
-				for (m in dev) if (dev[m] != rootdev && m !~ /^\/mnt\/wslg?(\/|$)/) printf "@wslbak\tskipped-mount\t%s\t%s\n", m, type[m]
-			}
-		' /proc/self/mountinfo >&2
+		# 每一行：編號 上層 裝置 根 掛載點 選項… - 檔案系統類型 來源 …
+		# 只用 shell 自己的功能來拆：有些精簡的 distro（例如 Fedora 的 WSL 映像）沒有 awk。
+		rootdev=
+		while read -r _id _parent dev _fsroot mount _rest; do
+			[ "$mount" = / ] && rootdev=$dev
+		done </proc/self/mountinfo
+		while read -r _id _parent dev _fsroot mount rest; do
+			fs=${rest#* - }
+			fs=${fs%% *}
+			case $fs in
+			ext2 | ext3 | ext4 | xfs | btrfs | f2fs | zfs | jfs | reiserfs | bcachefs) ;;
+			*) continue ;;
+			esac
+			[ "$mount" = / ] && continue
+			[ "$dev" = "$rootdev" ] && continue
+			case $mount in
+			/mnt/wsl | /mnt/wsl/* | /mnt/wslg | /mnt/wslg/*) continue ;;
+			esac
+			say "skipped-mount	$mount	$fs"
+		done </proc/self/mountinfo
 	fi
 
 	set -- --create --file=- --directory="$root" --format=posix --numeric-owner \
