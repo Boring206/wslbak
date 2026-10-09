@@ -280,9 +280,15 @@ last 20 hours.
   that the largest files have the right size, not that every byte of every file is.
 - **Single files can only be brought back into the distro**, not straight into a Windows folder. From
   Windows, open the result at `\\wsl.localhost\<distro>\<folder>`.
-- Developed on Ubuntu 26.04 and tested end to end on Windows 11 x64 with WSL 2.7 against Debian 13,
-  Fedora 44, Arch Linux, openSUSE Tumbleweed and Alpine 3.24. Windows 10 and the arm64 build have
-  not been tried yet, and neither has a PC with Docker Desktop installed; reports are welcome.
+- **Where it has been tested.** Developed on Ubuntu 26.04. The end-to-end suite passes against
+  Debian 12 and 13, Ubuntu 20.04, 22.04 and 24.04, Fedora 44, AlmaLinux 8 and 9, Rocky Linux 9,
+  Arch Linux, openSUSE Tumbleweed, Kali, Gentoo and Alpine 3.24 (GNU tar 1.30 to 1.35), on Windows 11
+  (build 26300), Windows Server 2025 (build 26100) and Windows Server 2022 (build 20348, the
+  generation of Windows 10). On NixOS, backups, test restores and single-file restores work; the
+  rest of the suite has not been completed there. The arm64 executables start and pass the unit
+  tests on arm64 Windows, where no WSL was available to back up. Not tried yet: Windows 10 itself,
+  Microsoft Defender's real-time protection, a PC with Docker Desktop, and distros of 100 GB or
+  more; reports are welcome.
 
 ## Troubleshooting
 

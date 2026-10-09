@@ -3,8 +3,10 @@
 # hosted runners differ from a desktop PC (elevated account, no interactive sign-in), and
 # the parts about the scheduled task and the console may not work there.
 #
-# The matrix covers what a single developer PC cannot: other builds of Windows, and
-# Microsoft Defender scanning in real time (hosted runners have it switched off).
+# The matrix covers what a single developer PC cannot: other builds of Windows. Windows
+# Server 2022 stands in for Windows 10 (same generation), Server 2025 for Windows 11 24H2.
+# Microsoft Defender's real-time protection cannot be tested here: the runner images put
+# Defender in passive mode, and it could not be switched back on within a job.
 name: e2e
 
 on:
@@ -21,20 +23,14 @@ permissions:
 
 jobs:
   e2e:
-    name: e2e (${{ matrix.os }}, Defender real-time ${{ matrix.defender }})
+    name: e2e (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 75
     continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-2025
-            defender: 'off'
-          - os: windows-2025
-            defender: 'on'
-          - os: windows-2022
-            defender: 'off'
+        os: [windows-2025, windows-2022]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -56,13 +52,8 @@ jobs:
           gh release download --repo microsoft/WSL --pattern $msi --dir $env:RUNNER_TEMP
           $install = Start-Process msiexec.exe -ArgumentList '/i', "$env:RUNNER_TEMP\$msi", '/quiet', '/norestart' -Wait -PassThru
           "msiexec exit code: $($install.ExitCode)"
+          $env:WSL_UTF8 = '1'
           wsl --version
-      - name: Turn on Microsoft Defender's real-time protection
-        if: matrix.defender == 'on'
-        shell: pwsh
-        run: |
-          Set-MpPreference -DisableRealtimeMonitoring $false
-          Get-MpComputerStatus | Select-Object AMServiceEnabled, AntivirusEnabled, RealTimeProtectionEnabled | Format-List
       # The test script runs inside WSL and starts the Windows executables from there,
       # as a user would. This distro only hosts the script; the tests create their own.
       - uses: Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364 # v7.0.0
@@ -77,4 +68,7 @@ jobs:
           WSLENV: E2E_DISTRO
         run: |
           node --version
+          # The upgrade test builds an older version with the Go that was set up on Windows.
+          GO_WIN="$(cmd.exe /c where go 2>/dev/null | head -n 1 | tr -d '\r')"
+          if [ -n "$GO_WIN" ]; then export GO="$(wslpath -u "$GO_WIN")"; fi
           bash scripts/e2e.sh

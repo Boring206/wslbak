@@ -13,7 +13,9 @@ say() {
 }
 
 main() {
-	PATH="$PATH:/run/current-system/sw/bin"
+	# NixOS 的工具不在一般的位置。/run/current-system 是開機時才建立的，
+	# 這份複本沒有開過機，所以也從磁碟上的系統設定檔去找。
+	PATH="$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/system/sw/bin"
 	LC_ALL=C
 	export PATH LC_ALL
 

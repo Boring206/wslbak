@@ -255,9 +255,13 @@ wslbak 把真正的大小也寫進那個標頭，備份在那裡也能正確還�
   不是證明每個檔案的每個位元組都完好。
 - **單一檔案只能取回到 distro 裡**，不能直接放到 Windows 的資料夾。在 Windows 上可以從
   `\\wsl.localhost\<distro>\<資料夾>` 打開取回的結果。
-- 在 Ubuntu 26.04 上開發；端對端測試是在 Windows 11 x64、WSL 2.7 上，對 Debian 13、Fedora 44、
-  Arch Linux、openSUSE Tumbleweed 與 Alpine 3.24 執行的。Windows 10、arm64 版本，以及裝有
-  Docker Desktop 的電腦都還沒有試過，歡迎回報。
+- **測過哪些環境。** 在 Ubuntu 26.04 上開發。端對端測試通過的有：Debian 12 與 13、Ubuntu 20.04／22.04／24.04、
+  Fedora 44、AlmaLinux 8 與 9、Rocky Linux 9、Arch Linux、openSUSE Tumbleweed、Kali、Gentoo、Alpine 3.24
+  （GNU tar 1.30 到 1.35）；Windows 這邊是 Windows 11（組建 26300）、Windows Server 2025（組建 26100）
+  與 Windows Server 2022（組建 20348，和 Windows 10 同一代）。NixOS 上備份、試還原與取回單一檔案可以用，
+  整套測試還沒有在那裡跑完。arm64 的執行檔在 arm64 Windows 上能啟動、單元測試通過，但那裡沒有 WSL 可以備份。
+  還沒試過的：Windows 10 本身、Microsoft Defender 的即時保護、裝有 Docker Desktop 的電腦、100 GB 以上的 distro，
+  歡迎回報。
 
 ## 疑難排解
 

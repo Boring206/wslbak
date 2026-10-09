@@ -28,4 +28,9 @@ First release.
   `--lang` or `WSLBAK_LANG`.
 - Distributed as an npm package that installs under Node on Windows and inside WSL, and as a zip that
   needs no Node.
-- Tested end to end against Debian, Fedora, Arch Linux, openSUSE Tumbleweed and Alpine.
+- A file of 8 GiB or more survives a restore. The importer that ships with WSL 2.7 restores such a
+  file as empty when an archive is written the way GNU tar writes it by default; wslbak writes the
+  size where that importer looks for it, and the test restore checks the sizes of the largest files.
+- Tested end to end against Debian, Ubuntu, Fedora, AlmaLinux, Rocky Linux, Arch Linux, openSUSE
+  Tumbleweed, Kali, Gentoo and Alpine, on three builds of Windows; see the README for versions and
+  for what has not been tried.

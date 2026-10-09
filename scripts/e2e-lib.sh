@@ -67,13 +67,15 @@ expect_true() {
 # wsl.exe prints its own warnings (lines starting with "wsl: ") next to the command's
 # output; they are not part of what the command said.
 no_wsl_notes() { tr -d '\r' | grep -v '^wsl: ' || true; }
+# On NixOS the usual tools are not on the PATH of a shell started like this.
+NIX_PATH_LINE='PATH="$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/system/sw/bin"; export PATH'
 # in_distro <distro> <script file>: run a script as root inside a distro.
-in_distro() { win "$WSL" -d "$1" -u root -e sh -s <"$2" 2>&1 | no_wsl_notes; }
+in_distro() { { printf '%s\n' "$NIX_PATH_LINE"; cat "$2"; } | win "$WSL" -d "$1" -u root -e sh -s 2>&1 | no_wsl_notes; }
 # sh_in <distro> <commands>: run shell commands as root inside a distro. They travel on
 # stdin, so nothing has to survive wsl.exe's handling of quotes.
-sh_in() { printf '%s\n' "$2" | win "$WSL" -d "$1" -u root -e sh -s 2>&1 | no_wsl_notes; }
+sh_in() { printf '%s\n%s\n' "$NIX_PATH_LINE" "$2" | win "$WSL" -d "$1" -u root -e sh -s 2>&1 | no_wsl_notes; }
 # as_default <distro> <commands>: the same as the distro's default user.
-as_default() { printf '%s\n' "$2" | win "$WSL" -d "$1" -e sh -s 2>&1 | no_wsl_notes; }
+as_default() { printf '%s\n%s\n' "$NIX_PATH_LINE" "$2" | win "$WSL" -d "$1" -e sh -s 2>&1 | no_wsl_notes; }
 distro_names() { wsl_exe -l -q </dev/null | tr -d '\r' | sed '/^$/d' | sort; }
 registered() { [ -n "$(registered_path "$1")" ]; }
 

@@ -1117,7 +1117,7 @@ func TestSelection(t *testing.T) {
 
 func TestExtractArgs(t *testing.T) {
 	link := "/run/wslbak-0123456789abcdef"
-	args := extractArgs("Ubuntu", link, nil)
+	args := extractArgs("Ubuntu", "tar", link, nil)
 	joined := strings.Join(args, " ")
 	for _, want := range []string{"-d Ubuntu -u root -e env LC_ALL=C tar", "--extract", "--file=-", "--directory=" + link,
 		"--numeric-owner", "--keep-old-files", "--xattrs", "--xattrs-include=*", "--acls"} {
@@ -1126,10 +1126,10 @@ func TestExtractArgs(t *testing.T) {
 		}
 	}
 	// 備份時這個 distro 的 tar 不支援的選項，解開時也不能用。
-	if joined := strings.Join(extractArgs("Ubuntu", link, []string{"--acls"}), " "); strings.Contains(joined, "--acls") || !strings.Contains(joined, "--xattrs") {
+	if joined := strings.Join(extractArgs("Ubuntu", "tar", link, []string{"--acls"}), " "); strings.Contains(joined, "--acls") || !strings.Contains(joined, "--xattrs") {
 		t.Errorf("with --acls dropped: %s", joined)
 	}
-	if joined := strings.Join(extractArgs("Ubuntu", link, []string{"--acls", "--xattrs"}), " "); strings.Contains(joined, "--acls") || strings.Contains(joined, "--xattrs") {
+	if joined := strings.Join(extractArgs("Ubuntu", "tar", link, []string{"--acls", "--xattrs"}), " "); strings.Contains(joined, "--acls") || strings.Contains(joined, "--xattrs") {
 		t.Errorf("with --xattrs dropped: %s", joined)
 	}
 	// 腳本回報的連結要是我們自己的格式才會被用在命令列上。
@@ -1331,5 +1331,34 @@ func TestLargestFiles(t *testing.T) {
 	out.Write([]byte("more"))
 	if out.buf.String() != "0123456789" || out.dropped != 10 {
 		t.Errorf("capped buffer kept %q and dropped %d", out.buf.String(), out.dropped)
+	}
+}
+
+// 解開檔案用的 tar：腳本回報的位置要是單純的絕對路徑才會被放上命令列。
+func TestTarProgram(t *testing.T) {
+	for _, c := range []struct {
+		reported []string
+		want     string
+	}{
+		{[]string{"/usr/bin/tar"}, "/usr/bin/tar"},
+		{[]string{"/run/current-system/sw/bin/tar"}, "/run/current-system/sw/bin/tar"},
+		{[]string{"/nix/store/0c6kd9zgyw0kq5vkjm1hsg2r0qk3mv29-gnutar-1.35/bin/tar"}, "/nix/store/0c6kd9zgyw0kq5vkjm1hsg2r0qk3mv29-gnutar-1.35/bin/tar"},
+		{nil, "tar"},
+		{[]string{""}, "tar"},
+		{[]string{"tar"}, "tar"},
+		{[]string{"/usr/bin/tar", "extra"}, "tar"},
+		{[]string{"/usr/bin/tar --to-command=evil"}, "tar"},
+		{[]string{"/usr/bin/evil"}, "tar"},
+		{[]string{"/tmp/my dir/tar"}, "tar"},
+		{[]string{"/tmp/$(id)/tar"}, "tar"},
+		{[]string{"/" + strings.Repeat("a", 300) + "/tar"}, "tar"},
+	} {
+		if got := tarProgram(c.reported); got != c.want {
+			t.Errorf("tarProgram(%q) = %q, want %q", c.reported, got, c.want)
+		}
+	}
+	args := extractArgs("NixOS", "/run/current-system/sw/bin/tar", "/run/wslbak-0123456789abcdef", nil)
+	if !slices.Contains(args, "/run/current-system/sw/bin/tar") || slices.Contains(args, "tar") {
+		t.Errorf("the reported tar is not what gets started: %q", args)
 	}
 }

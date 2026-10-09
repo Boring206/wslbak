@@ -262,7 +262,7 @@ readlink symlink
 cat "中文檔名 with space.txt"
 find . -path "./d*" -name "*.txt" | wc -c
 '
-sig() { printf 'set -- %s\n%s\n' "$2" "$FIXTURE_SIG" | win "$WSL" -d "$1" -u root -e sh -s 2>&1 | no_wsl_notes; }
+sig() { printf '%s\nset -- %s\n%s\n' "$NIX_PATH_LINE" "$2" "$FIXTURE_SIG" | win "$WSL" -d "$1" -u root -e sh -s 2>&1 | no_wsl_notes; }
 WANT="$(sig "$DISTRO" /wslbak-fixture)"
 GOT="$(sig "$DISTRO" "$BACK/wslbak-fixture")"
 if [ -n "$WANT" ] && [ "$WANT" = "$GOT" ]; then
@@ -324,8 +324,9 @@ SECOND="$(newest_backup)"
 ARCHIVE="$DEST/$DISTRO/$SECOND.tar.gz"
 SIZE=$(stat -c %s "$ARCHIVE")
 cp "$ARCHIVE" "$SANDBOX/pristine.tar.gz"
-# Flip one byte in the middle.
-printf '\xff' | dd of="$ARCHIVE" bs=1 seek=$((SIZE / 2)) conv=notrunc 2>/dev/null
+# Change one byte in the middle, to a value it certainly did not have before.
+WAS="$(dd if="$ARCHIVE" bs=1 skip=$((SIZE / 2)) count=1 2>/dev/null | od -An -tu1 | tr -d ' ')"
+printf "\\$(printf '%03o' $(((WAS + 1) % 256)))" | dd of="$ARCHIVE" bs=1 seek=$((SIZE / 2)) conv=notrunc 2>/dev/null
 run verify "$SECOND"
 expect_rc 2 "verify fails on an archive with one byte changed"
 expect_has "the test restore failed" "and says so"
