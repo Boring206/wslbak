@@ -177,3 +177,34 @@ func TestDestructiveCallsAreFenced(t *testing.T) {
 		}
 	}
 }
+
+// 開始功能表裡的清理只碰我們自己的暫時 distro 留下的「空」資料夾。
+func TestSweepStartMenu(t *testing.T) {
+	programs := t.TempDir()
+	ours := "wslbak-verify-20260115T030000Z-0123456789abcdef"
+	oursWithShortcut := "wslbak-verify-20260115T030001Z-0123456789abcdef"
+	for _, dir := range []string{ours, oursWithShortcut, "Ubuntu", "wslbak-verify-notes", "Accessories"} {
+		if err := os.Mkdir(filepath.Join(programs, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, file := range []string{filepath.Join(oursWithShortcut, "something.lnk"), "wslbak-verify-20260115T030002Z-0123456789abcdef"} {
+		if err := os.WriteFile(filepath.Join(programs, file), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sweepStartMenu(programs)
+	left := map[string]bool{}
+	entries, _ := os.ReadDir(programs)
+	for _, e := range entries {
+		left[e.Name()] = true
+	}
+	if left[ours] {
+		t.Errorf("the empty folder of a temporary distro was not removed")
+	}
+	for _, name := range []string{oursWithShortcut, "Ubuntu", "wslbak-verify-notes", "Accessories", "wslbak-verify-20260115T030002Z-0123456789abcdef"} {
+		if !left[name] {
+			t.Errorf("%s was removed, but it is not an empty folder of a temporary distro", name)
+		}
+	}
+}

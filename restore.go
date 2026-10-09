@@ -193,6 +193,8 @@ func cmdRestore(opts options) int {
 	ctx, cancel := context.WithTimeout(context.Background(), importTimeout)
 	defer cancel()
 	if err := importDistro(ctx, name, target, m.archivePath(), nil); err != nil {
+		// 匯入沒成功時，WSL 可能已經在開始功能表替它建了一個空資料夾。
+		removeStartMenuFolder(name)
 		return fail(err)
 	}
 	// 匯入的 distro 預設用 root 登入；設回備份當時的預設使用者。

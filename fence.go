@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 // 這個檔案是整個程式裡唯一會移除 distro、唯一會遞迴刪除資料夾的地方。
@@ -115,7 +117,44 @@ func unregisterVerifyDistro(root, name string) error {
 	default:
 		return fmt.Errorf("refusing to remove %s: %w", name, err)
 	}
+	removeStartMenuFolder(name)
 	return removeOwnedDir(root, name)
+}
+
+// startMenuPrograms 是目前使用者的開始功能表「程式集」資料夾；找不到時回傳空字串。
+func startMenuPrograms() string {
+	dir, err := windows.KnownFolderPath(windows.FOLDERID_Programs, 0)
+	if err != nil {
+		return ""
+	}
+	return dir
+}
+
+// removeStartMenuFolder 拿掉 WSL 替某個 distro 留在開始功能表裡的空資料夾。
+// WSL 匯入 distro 時會在那裡建立一個同名的資料夾，取消註冊或匯入失敗之後卻不一定收走，
+// 每晚試還原一次的話會越積越多。只刪空的：os.Remove 刪不掉有內容的資料夾。
+func removeStartMenuFolder(name string) {
+	programs := startMenuPrograms()
+	if programs == "" || !distroNameRe.MatchString(name) {
+		return
+	}
+	if os.Remove(filepath.Join(programs, name)) == nil {
+		debugf("removed the empty Start Menu folder of %s", name)
+	}
+}
+
+// sweepStartMenu 清掉以前的試還原留在開始功能表裡的空資料夾。
+// WSL 有時是在 distro 被移除之後才建立它，所以每次試還原開始前再掃一次。
+func sweepStartMenu(programs string) {
+	entries, err := os.ReadDir(programs)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() && verifyNameRe.MatchString(e.Name()) {
+			os.Remove(filepath.Join(programs, e.Name()))
+		}
+	}
 }
 
 // removeOwnedDir 刪除 root\name 與它的認領檔。name 必須是我們產生的格式，
@@ -136,6 +175,9 @@ func removeOwnedDir(root, name string) error {
 // sweepStale 清掉上次沒有收乾淨的暫時 distro（例如試還原途中被強制關機）。
 // 以認領檔為準：只處理我們確實建立過的名稱。
 func sweepStale(root string) {
+	if programs := startMenuPrograms(); programs != "" {
+		sweepStartMenu(programs)
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return

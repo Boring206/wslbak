@@ -357,6 +357,7 @@ fi
 unregister_guarded "$PLAIN" "$PLAIN_DIR" 2>/dev/null
 
 section "6. A damaged archive fails the test restore"
+VERIFY_FOLDERS="$(find "$(start_menu)" -maxdepth 1 -name 'wslbak-verify-*' 2>/dev/null | wc -l)"
 run run --no-verify
 expect_rc 0 "run --no-verify succeeds"
 expect_has "skipped this time" "and says the test restore was skipped"
@@ -375,6 +376,8 @@ run verify "$SECOND"
 expect_rc 2 "verify fails on a truncated archive"
 expect_true "no temporary distro is left after the failures" [ "$(distro_names)" = "$BEFORE_DISTROS" ]
 expect_true "and the folder for temporary distros is empty" [ -z "$(ls -A "$HOME_DIR/verify" 2>/dev/null)" ]
+# WSL makes a Start Menu folder for a distro it imports and does not always take it away.
+expect_true "nor is a Start Menu folder left for one" [ "$(find "$(start_menu)" -maxdepth 1 -name 'wslbak-verify-*' 2>/dev/null | wc -l)" -le "$VERIFY_FOLDERS" ]
 cp "$SANDBOX/pristine.tar.gz" "$ARCHIVE"
 run verify "$SECOND"
 expect_rc 0 "verify passes again once the archive is intact"
@@ -858,6 +861,7 @@ expect_true "every backup is still there" [ "$(backups)" = "$KEPT" ]
 expect_true "the look-alike distro survived uninstall" registered "$DECOY"
 expect_true "the test distro itself was never removed" registered "$DISTRO"
 unregister_guarded "$DECOY" "$DECOY_DIR" 2>/dev/null
+expect_true "no Start Menu folder is left for the distros this run created and removed" [ -z "$(find "$(start_menu)" -maxdepth 1 -name "*$RUN_ID*" 2>/dev/null)" ]
 
 section "17. Backups on a network share"
 # The administrative share of the drive the sandbox is on, reached through the loopback
