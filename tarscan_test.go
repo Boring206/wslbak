@@ -190,9 +190,9 @@ func TestOverrideReader(t *testing.T) {
 		if len(names) != want || names[want-2] != "./etc/wsl.conf" || names[want-1] != "./etc/wsl-distribution.conf" {
 			t.Errorf("%s: entries after override = %q", tc.name, names)
 		}
-		content, found, err := lastWSLConf(bytes.NewReader(out))
-		if err != nil || !found || content != inertWSLConf {
-			t.Errorf("%s: last wsl.conf found=%v err=%v content=%q", tc.name, found, err, content)
+		check, err := scanOverride(bytes.NewReader(out), end)
+		if err != nil || !check.conf.ours || check.conf.content != inertWSLConf || !check.dist.ours || check.dist.content != inertDistConf {
+			t.Errorf("%s: the override is not what ends up in place: %s, err=%v", tc.name, check.summary(), err)
 		}
 		if len(out)%tarBlock != 0 {
 			t.Errorf("%s: output length %d is not a multiple of the block size", tc.name, len(out))
@@ -215,8 +215,8 @@ func TestOverrideReaderWrongOffset(t *testing.T) {
 	}
 	// 沒有覆寫的原始封存，最後一個 wsl.conf 不是我們的。
 	original, _ := buildTar(t, sampleEntries())
-	if content, found, err := lastWSLConf(bytes.NewReader(original)); err != nil || !found || content == inertWSLConf {
-		t.Errorf("original archive: found=%v err=%v content=%q", found, err, content)
+	if check, err := scanOverride(bytes.NewReader(original), int64(len(original))); err != nil || !check.conf.found || check.inert() {
+		t.Errorf("original archive: %s, err=%v", check.summary(), err)
 	}
 }
 
@@ -317,10 +317,78 @@ func TestScanRealGNUTar(t *testing.T) {
 	if names := tarNames(t, out); int64(len(names)) != entries+2 {
 		t.Errorf("%d entries after override, want %d", len(names), entries+2)
 	}
-	if content, found, err := lastWSLConf(bytes.NewReader(out)); err != nil || !found || content != inertWSLConf {
-		t.Errorf("after override: found=%v err=%v content=%q", found, err, content)
+	if check, err := scanOverride(bytes.NewReader(out), idx.EndOffset); err != nil || !check.inert() {
+		t.Errorf("after override: %s, err=%v", check.summary(), err)
 	}
-	if content, _, _ := lastWSLConf(bytes.NewReader(data)); !strings.Contains(content, "systemd=true") {
-		t.Errorf("the fixture's own wsl.conf should enable systemd, got %q", content)
+	if check, _ := scanOverride(bytes.NewReader(data), idx.EndOffset); !strings.Contains(check.conf.content, "systemd=true") {
+		t.Errorf("the fixture's own wsl.conf should enable systemd, got %q", check.conf.content)
+	}
+}
+
+// 封存如果被人動過手腳，覆寫不能被騙過去。
+func TestOverrideCannotBeFooled(t *testing.T) {
+	for name, want := range map[string]string{
+		"./etc/wsl.conf": "etc/wsl.conf", "etc/wsl.conf": "etc/wsl.conf", "/etc//wsl.conf": "etc/wsl.conf",
+		"./etc/./wsl.conf": "etc/wsl.conf", "x/../etc/wsl.conf": "etc/wsl.conf", "./etc/": "etc", "./": "",
+	} {
+		if got := memberKey(name); got != want {
+			t.Errorf("memberKey(%q) = %q, want %q", name, got, want)
+		}
+	}
+	tail := buildOverrideTail()
+	through := func(data []byte, end int64) overrideCheck {
+		t.Helper()
+		out, err := io.ReadAll(newOverrideReader(bytes.NewReader(data), end, tail))
+		if err != nil {
+			t.Fatal(err)
+		}
+		check, err := scanOverride(bytes.NewReader(out), end)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return check
+	}
+
+	// 正常的封存：接上去的那一份是最後一份。
+	data, end := buildTar(t, []testEntry{
+		{name: "./etc/", kind: tar.TypeDir},
+		{name: "./etc/wsl.conf", kind: tar.TypeReg, body: "[boot]\nsystemd=true\n"},
+	})
+	if check := through(data, end); !check.inert() {
+		t.Errorf("an ordinary archive: %s", check.summary())
+	}
+
+	// /etc 是符號連結：我們的檔案會被寫到別的地方去。
+	data, end = buildTar(t, []testEntry{
+		{name: "./etc/", kind: tar.TypeDir},
+		{name: "./etc", kind: tar.TypeSymlink, link: "elsewhere"},
+	})
+	if check := through(data, end); check.inert() {
+		t.Errorf("/etc as a symbolic link was accepted: %s", check.summary())
+	}
+
+	// 動過手腳的封存：自己帶一份內容和我們一樣的 ./etc/wsl.conf，再放一份寫法不同、內容有害的，
+	// 最後用一個宣稱大小剛好等於覆寫項目的檔案，把我們接上去的那一段吞成它的資料。
+	body, bodyEnd := buildTar(t, []testEntry{
+		{name: "./etc/", kind: tar.TypeDir},
+		{name: "./etc/wsl.conf", kind: tar.TypeReg, body: inertWSLConf},
+		{name: "./etc/wsl-distribution.conf", kind: tar.TypeReg, body: inertDistConf},
+		{name: "etc/wsl.conf", kind: tar.TypeReg, body: "[boot]\ncommand=/payload\n"},
+	})
+	var header bytes.Buffer
+	if err := tar.NewWriter(&header).WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: "./swallow", Mode: 0o644,
+		Size: int64(len(tail) - 2*tarBlock), Format: tar.FormatUSTAR}); err != nil {
+		t.Fatal(err)
+	}
+	// buildTar 的結果以結尾標記收尾；把它拿掉，接上那個檔案的標頭，再補回全零的結尾。
+	entries := body[:bodyEnd]
+	crafted := append(append(append([]byte{}, entries...), header.Bytes()[:tarBlock]...), make([]byte, 2*tarBlock)...)
+	cut := int64(len(entries) + tarBlock)
+	check := through(crafted, cut)
+	if check.inert() {
+		t.Errorf("a crafted archive swallowed the override and was accepted: %s", check.summary())
+	}
+	if check.conf.ours || !strings.Contains(check.conf.content, "command=/payload") {
+		t.Errorf("the harmful wsl.conf should be the one seen last: %s content=%q", check.summary(), check.conf.content)
 	}
 }

@@ -2,7 +2,8 @@
 # Runs as root inside the throwaway test distro. It plants the kinds of files that a
 # backup tool tends to get wrong, under /wslbak-fixture: a sparse file larger than 8 GiB,
 # an extended attribute, a file capability, an ACL, hard links, a fifo, a device node,
-# non-ASCII names and very long paths.
+# a setuid program, non-ASCII names and very long paths. It also adds an ordinary user
+# and a small service, to see whether a restored distro can actually be used.
 set -e
 LC_ALL=C
 export LC_ALL DEBIAN_FRONTEND=noninteractive
@@ -57,4 +58,44 @@ echo 中文內容 >'中文檔名 with space.txt'
 long=$(printf 'd%.0s' $(seq 1 120))
 mkdir -p "$long/$long"
 echo deep >"$long/$long/$(printf 'f%.0s' $(seq 1 150)).txt"
+
+cp /bin/true setuid-binary
+chmod 4755 setuid-binary
+# A name that would change the colour of a console if it were printed as it is.
+: >"$(printf 'esc\033[31mred')"
+
+# An ordinary user with a private key: a restored distro must log in as the same user, and
+# the key must keep its owner and mode.
+if ! id tester >/dev/null 2>&1; then
+	if command -v useradd >/dev/null 2>&1; then
+		useradd -m -u 4321 -s /bin/sh tester 2>/dev/null || true
+	elif command -v adduser >/dev/null 2>&1; then
+		adduser -D -u 4321 -s /bin/sh tester 2>/dev/null || true
+	fi
+fi
+if id tester >/dev/null 2>&1; then
+	mkdir -p /home/tester/.ssh
+	echo 'not a real key' >/home/tester/.ssh/id_test
+	chmod 700 /home/tester/.ssh
+	chmod 600 /home/tester/.ssh/id_test
+	chown -R tester /home/tester
+fi
+
+# A service that leaves a mark when it starts: services must come up in a restored distro.
+if [ -d /etc/systemd/system ]; then
+	cat >/etc/systemd/system/wslbak-e2e.service <<'UNIT'
+[Unit]
+Description=wslbak end-to-end test marker
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo started > /run/e2e-service-started'
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+	mkdir -p /etc/systemd/system/multi-user.target.wants
+	ln -sf ../wslbak-e2e.service /etc/systemd/system/multi-user.target.wants/wslbak-e2e.service
+fi
 echo seeded

@@ -142,6 +142,8 @@ type stderrLog struct {
 func (l *stderrLog) add(line string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// 這些行來自 distro 裡，可能帶著檔名；之後會顯示在畫面上、寫進紀錄檔。
+	line = plain(line)
 	if rest, ok := strings.CutPrefix(line, protoPrefix); ok {
 		l.proto = append(l.proto, strings.Split(rest, "\t"))
 		return
@@ -315,7 +317,7 @@ func runBackup(req backupRequest) (*manifest, error) {
 	}()
 
 	sum := sha256.New()
-	sink := &stickyWriter{w: io.MultiWriter(file, sum)}
+	sink := &stickyWriter{w: io.MultiWriter(withTestFaults(file), sum)}
 	buffered := bufio.NewWriterSize(sink, 1<<20)
 	zw := pgzip.NewWriter(buffered)
 	// 每塊 1 MiB。區塊越大，同時在壓縮的區塊佔的記憶體越多；1 MiB 時大約是「執行緒數 × 幾 MiB」。
@@ -334,7 +336,12 @@ func runBackup(req backupRequest) (*manifest, error) {
 	} else {
 		logf("file index for %s: %v", id, indexErr)
 	}
-	idx, scanErr := scanTar(io.TeeReader(progress, zw), onEntry)
+	// tar 的輸出先經過 sizeFixReader：8 GiB 以上的檔案要把大小補進標頭，WSL 的匯入才讀得對。
+	fixed := newSizeFixReader(progress)
+	idx, scanErr := scanTar(io.TeeReader(fixed, zw), onEntry)
+	if fixed.Fixed > 0 {
+		logf("backup %s: wrote the size of %d file(s) of 8 GiB or more into their tar headers", id, fixed.Fixed)
+	}
 	closeErr := zw.Close()
 	if err := buffered.Flush(); closeErr == nil {
 		closeErr = err

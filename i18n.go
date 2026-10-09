@@ -321,6 +321,8 @@ type catalog struct {
 	DocVerifyAttrFix    string
 	DocInstalled        string // 資料夾
 	DocDestOK           string // 資料夾, 磁碟, 可用空間
+	DocDestShared       string // 資料夾
+	DocDestSharedFix    string
 	DocDestMissing      string // 資料夾
 	DocDestMissingFix   string
 	DocDestLow          string // 磁碟, 可用空間, 需要
@@ -356,6 +358,7 @@ type catalog struct {
 	BadInto            string // 值
 	PathRoot           string
 	PathDistroGone     string // distro
+	PathWrongDistro    string // 備份編號, 紀錄裡的 distro, 資料夾所屬的 distro
 	PathPlan           string // 數量, 大小, 編號, distro, 資料夾
 	PathTargetUsed     string // 資料夾
 	PathTargetNotDir   string // 路徑
@@ -621,6 +624,8 @@ var zhTW = catalog{
 	DocVerifyAttrFix:    "在檔案總管的「內容 → 進階」取消這個資料夾的壓縮與加密",
 	DocInstalled:        "排程用的程式在 %s，檔案完好",
 	DocDestOK:           "%[1]s 可以使用，%[2]s 還有 %[3]s",
+	DocDestShared:       "這台電腦上的其他帳號也讀得到 %s。備份沒有加密，裡面是 distro 的全部檔案，金鑰也在內；只有你一個人用這台電腦的話可以不管。",
+	DocDestSharedFix:    "和別人共用電腦時：把這個資料夾的權限改成只有你能存取，或把備份放到只有你能用的位置",
 	DocDestMissing:      "連不到 %s",
 	DocDestMissingFix:   "如果是外接碟或網路磁碟，接上之後再試",
 	DocDestLow:          "%[1]s 只剩 %[2]s，下一份備份大約需要 %[3]s",
@@ -652,6 +657,7 @@ var zhTW = catalog{
 	BadInto:             "--into 要是 distro 裡的絕對路徑，例如 /home/me/restored：%s",
 	PathRoot:            "要取回整個 distro 的話，直接用 wslbak restore，不要加 --path。",
 	PathDistroGone:      "要把檔案放回 %s，但這個 distro 已經不在了。可以先用 wslbak restore 把整個 distro 還原回來。",
+	PathWrongDistro:     "備份 %[1]s 的紀錄寫著它屬於 %[2]s，卻放在 %[3]s 的備份資料夾裡。為了不把檔案放進錯的 distro，這裡不繼續。",
 	PathPlan:            "將從備份 %[3]s 取回 %[1]d 個項目（共 %[2]s），放到 %[4]s 裡的 %[5]s\n完整的路徑會在那個資料夾底下重建，不會覆蓋任何現有的檔案。",
 	PathTargetUsed:      "%s 已經存在而且不是空的。請用 --into 指定一個不存在、或是空的資料夾。",
 	PathTargetNotDir:    "%s 已經存在，而且不是資料夾。",
@@ -942,6 +948,8 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	DocVerifyAttrFix:    "Turn compression and encryption off for that folder in Explorer: Properties → Advanced",
 	DocInstalled:        "The program the schedule runs is in %s and is intact",
 	DocDestOK:           "%[1]s is usable; %[2]s has %[3]s free",
+	DocDestShared:       "Other accounts on this PC can read %s. Backups are not encrypted and hold every file of the distro, keys included; if you are the only one using this PC, nothing needs doing.",
+	DocDestSharedFix:    "On a shared PC: restrict that folder to your own account, or keep backups somewhere only you can reach",
 	DocDestMissing:      "%s cannot be reached",
 	DocDestMissingFix:   "If it is on an external or network drive, connect it and try again",
 	DocDestLow:          "%[1]s has only %[2]s free; the next backup needs about %[3]s",
@@ -973,6 +981,7 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	BadInto:             "--into must be an absolute path inside the distro, such as /home/me/restored: %s",
 	PathRoot:            "To bring back the whole distro, use wslbak restore without --path.",
 	PathDistroGone:      "The files would go back into %s, but that distro no longer exists. Restore the whole distro with wslbak restore first.",
+	PathWrongDistro:     "The record of backup %[1]s says it belongs to %[2]s, but it sits in the backup folder of %[3]s. Stopping, so that no files go into the wrong distro.",
 	PathPlan:            "%[1]d item(s) (%[2]s) from backup %[3]s will be put into %[5]s inside %[4]s\nTheir full paths are recreated under that folder, so no existing file is overwritten.",
 	PathTargetUsed:      "%s already exists and is not empty. Give --into a folder that does not exist yet, or an empty one.",
 	PathTargetNotDir:    "%s already exists and is not a folder.",

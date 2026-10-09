@@ -19,7 +19,8 @@ First release.
 - `wslbak config` shows and changes settings: retention (newest, weekly, monthly), excludes, time of
   day, notifications.
 - `wslbak doctor` checks WSL, each distro, Windows security settings, antivirus, the schedule,
-  destinations and free space, and points out large caches that could be excluded.
+  destinations and free space, points out large caches that could be excluded, and says when other
+  accounts on the PC can read the backup folder (backups are not encrypted).
 - `wslbak list`, `status`, `verify` and `uninstall`; `--dry-run` on every command that changes something.
 - A Windows notification when a backup fails or cannot be verified, and optionally a webhook (ntfy,
   Discord, Slack). Notifications never contain file names.

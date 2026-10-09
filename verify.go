@@ -58,6 +58,8 @@ type checkReport struct {
 	User          string // ok、missing、no-home；沒有檢查時是空的
 	SamplesOK     int
 	SamplesBad    int
+	SizesOK       int
+	SizesBad      int
 	BadLines      []string
 }
 
@@ -90,6 +92,13 @@ func parseCheck(text string) checkReport {
 			}
 		case "sample-bad":
 			r.BadLines = append(r.BadLines, strings.Join(row[1:], " "))
+		case "sizes":
+			if len(row) > 2 {
+				r.SizesOK, _ = strconv.Atoi(row[1])
+				r.SizesBad, _ = strconv.Atoi(row[2])
+			}
+		case "size-bad":
+			r.BadLines = append(r.BadLines, "size of "+strings.Join(row[1:], " "))
 		}
 	}
 	return r
@@ -103,7 +112,7 @@ func (r checkReport) inert() bool {
 }
 
 // judgeCheck 依檢查腳本的結果下結論；通過時 reason 是空字串。
-func judgeCheck(r checkReport, samples int) (reason, detail string) {
+func judgeCheck(r checkReport, samples, sizes int) (reason, detail string) {
 	switch {
 	case !r.Done:
 		return reasonCheck, "the check script did not finish"
@@ -114,6 +123,8 @@ func judgeCheck(r checkReport, samples int) (reason, detail string) {
 		return reasonUser, "default user: " + r.User
 	case r.SamplesBad > 0 || r.SamplesOK != samples:
 		return reasonSamples, fmt.Sprintf("%d of %d files match; %s", r.SamplesOK, samples, strings.Join(r.BadLines, "; "))
+	case r.SizesBad > 0 || r.SizesOK != sizes:
+		return reasonSamples, fmt.Sprintf("%d of the %d largest files have the right size; %s", r.SizesOK, sizes, strings.Join(r.BadLines, "; "))
 	}
 	return "", ""
 }
@@ -192,16 +203,15 @@ func runVerify(m *manifest, onProgress func(tarBytes int64)) *verifyResult {
 
 	gateR, gateW := io.Pipe()
 	type gateResult struct {
-		content string
-		found   bool
-		err     error
+		check overrideCheck
+		err   error
 	}
 	gate := make(chan gateResult, 1)
 	go func() {
-		content, found, err := lastWSLConf(gateR)
+		check, err := scanOverride(gateR, m.Index.EndOffset)
 		// 不管結果如何都把剩下的讀完，免得寫的那一端卡住。
 		io.Copy(io.Discard, gateR)
-		gate <- gateResult{content, found, err}
+		gate <- gateResult{check, err}
 	}()
 
 	stop, reporterGone := make(chan struct{}), make(chan struct{})
@@ -249,8 +259,8 @@ func runVerify(m *manifest, onProgress func(tarBytes int64)) *verifyResult {
 		return finish(reasonChanged, "sha256 is "+got)
 	}
 	// 到這裡之前，暫時 distro 只是被匯入，還沒有啟動過。覆寫沒有確認生效就不啟動它。
-	if gated.err != nil || !gated.found || gated.content != inertWSLConf {
-		return finish(reasonOverride, fmt.Sprintf("found=%v err=%v", gated.found, gated.err))
+	if gated.err != nil || !gated.check.inert() {
+		return finish(reasonOverride, fmt.Sprintf("%s, err=%v", gated.check.summary(), gated.err))
 	}
 
 	var list strings.Builder
@@ -261,13 +271,18 @@ func runVerify(m *manifest, onProgress func(tarBytes int64)) *verifyResult {
 	if m.DefaultUID != 0 {
 		uid = strconv.FormatUint(uint64(m.DefaultUID), 10)
 	}
+	var sizes strings.Builder
+	for _, f := range m.Index.Largest {
+		sizes.WriteString(strconv.FormatInt(f.Size, 10) + "\t" + f.Path + "\n")
+	}
 	out, err := runInDistro(name, withVars(checkScript,
 		scriptVar{"WSLBAK_SAMPLES", list.String()},
+		scriptVar{"WSLBAK_SIZES", sizes.String()},
 		scriptVar{"WSLBAK_UID", uid},
 	), checkTimeout)
 	report := parseCheck(decodeWSLText(out))
 	res.Samples = report.SamplesOK
-	if reason, detail := judgeCheck(report, len(m.Index.Samples)); reason != "" {
+	if reason, detail := judgeCheck(report, len(m.Index.Samples), len(m.Index.Largest)); reason != "" {
 		if err != nil {
 			detail += " (" + err.Error() + ": " + firstLine(decodeWSLText(out)) + ")"
 		}

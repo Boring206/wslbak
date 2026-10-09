@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/mattn/go-runewidth"
 	"golang.org/x/sys/windows"
@@ -36,6 +37,67 @@ func initConsole() {
 	}
 	if windows.SetConsoleMode(h, mode|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING) == nil {
 		useColor = true
+	}
+}
+
+// plain 把來自 distro 的文字（檔名、連結目標、tar 的訊息、發行版名稱）裡的控制字元換成看得見的寫法。
+// 主控台會解讀跳脫序列，而 distro 裡任何使用者都能建立名稱帶有這些字元的檔案。
+func plain(s string) string {
+	if !strings.ContainsFunc(s, unprintable) {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case !unprintable(r):
+			b.WriteRune(r)
+		case r <= 0xff:
+			fmt.Fprintf(&b, `\x%02x`, r)
+		default:
+			fmt.Fprintf(&b, `\u%04x`, r)
+		}
+	}
+	return b.String()
+}
+
+// unprintable：控制字元（定位字元除外），以及會改變文字顯示方向的字元。
+func unprintable(r rune) bool {
+	switch {
+	case r == '\t':
+		return false
+	case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
+		return true
+	case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+		return true
+	}
+	return false
+}
+
+// processMemoryCounters 對應 Windows 的 PROCESS_MEMORY_COUNTERS。
+type processMemoryCounters struct {
+	cb                         uint32
+	pageFaultCount             uint32
+	peakWorkingSetSize         uintptr
+	workingSetSize             uintptr
+	quotaPeakPagedPoolUsage    uintptr
+	quotaPagedPoolUsage        uintptr
+	quotaPeakNonPagedPoolUsage uintptr
+	quotaNonPagedPoolUsage     uintptr
+	pagefileUsage              uintptr
+	peakPagefileUsage          uintptr
+}
+
+var procGetProcessMemoryInfo = windows.NewLazySystemDLL("kernel32.dll").NewProc("K32GetProcessMemoryInfo")
+
+// debugPeakMemory 在 --debug 時印出這次執行最多用了多少記憶體，回報問題時有用。
+func debugPeakMemory() {
+	if !debugEnabled {
+		return
+	}
+	mem := processMemoryCounters{}
+	mem.cb = uint32(unsafe.Sizeof(mem))
+	if ok, _, _ := procGetProcessMemoryInfo.Call(uintptr(windows.CurrentProcess()), uintptr(unsafe.Pointer(&mem)), uintptr(mem.cb)); ok != 0 {
+		debugf("peak memory: %s", humanBytes(int64(mem.peakWorkingSetSize)))
 	}
 }
 

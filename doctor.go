@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -373,6 +374,9 @@ func cmdDoctor(opts options) int {
 				r.add(checkResult{levelOK, fmt.Sprintf(T.DocDestOK, dir, vol.Root, humanBytes(int64(vol.Free))), ""})
 			}
 		}
+		if existingAncestor(dir) == dir && othersCanRead(folderSDDL(dir)) {
+			r.add(checkResult{levelNote, fmt.Sprintf(T.DocDestShared, dir), T.DocDestSharedFix})
+		}
 		if sameVolume(dir, d.BasePath) {
 			r.add(checkResult{levelWarn, fmt.Sprintf(T.WarnSameVolume, vol.Root), ""})
 		} else if a, okA := diskNumber(vol.Root); okA {
@@ -437,4 +441,33 @@ func (r *doctorReport) finish() int {
 	}
 	fmt.Println(green(T.DocSummaryOK))
 	return 0
+}
+
+// folderSDDL 讀出資料夾的存取權限，寫成 SDDL 字串；讀不到時回傳空字串。
+func folderSDDL(dir string) string {
+	sd, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return ""
+	}
+	return sd.String()
+}
+
+// sharedACE 比對「允許」這幾個群組存取的項目：所有人、已驗證的使用者、本機 Users 群組、互動式登入的使用者。
+var sharedACE = regexp.MustCompile(`\(A;[^;()]*;[^;()]+;[^;()]*;[^;()]*;(WD|AU|BU|IU|S-1-1-0|S-1-5-11|S-1-5-32-545|S-1-5-4)\)`)
+
+// othersCanRead 判斷這台電腦上的其他帳號是否也被允許存取。備份沒有加密，裡面是 distro 的全部檔案，
+// 所以放在大家都讀得到的地方時要讓使用者知道。讀不到權限（空字串）時不下結論。
+func othersCanRead(sddl string) bool {
+	_, dacl, found := strings.Cut(sddl, "D:")
+	if !found {
+		return false
+	}
+	if before, _, hasSACL := strings.Cut(dacl, "S:"); hasSACL {
+		dacl = before
+	}
+	// 沒有任何項目的權限清單（例如 FAT、exFAT 上的資料夾）代表不設限。
+	if !strings.Contains(dacl, "(") {
+		return strings.Contains(dacl, "NO_ACCESS_CONTROL")
+	}
+	return sharedACE.MatchString(dacl)
 }

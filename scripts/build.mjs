@@ -2,6 +2,8 @@
 //   node scripts/build.mjs          編出 bin/ 底下的四個執行檔（x64／arm64 × 主控台／無視窗）
 //   node scripts/build.mjs --test   go vet 加上單元測試
 //   node scripts/build.mjs --dist   把編好的執行檔包成 dist/ 底下的 zip、SHA256SUMS 與套件清單
+//   node scripts/build.mjs --as <版本> --into <資料夾>
+//                                   在那個資料夾編出標成另一個版本的 wslbak.exe 與 wslbakw.exe（測試升級用）
 // 版本號以 package.json 為唯一來源，建置時注入執行檔。
 
 import { spawnSync } from 'node:child_process';
@@ -42,6 +44,40 @@ function run(cmd, args, env = {}) {
 
 const target = { GOOS: 'windows', CGO_ENABLED: '0' };
 mkdirSync(join(root, 'bin'), { recursive: true });
+// 測試用的工具與另一個版本的執行檔只編給這台機器的架構。
+const hostArch = process.arch === 'arm64' ? 'arm64' : 'amd64';
+
+function variantsFor(version) {
+  const base = `-s -w -X main.version=${version}`;
+  // wslbakw 是同一份程式編成沒有主控台視窗的版本，給排程工作用：
+  // 主控台程式被工作排程器啟動時會跳出一個黑色視窗。
+  return [
+    ['wslbak', base],
+    ['wslbakw', `${base} -H=windowsgui`],
+  ];
+}
+
+// go.exe 是 Windows 程式，輸出位置要給它 Windows 路徑。
+function forGo(path) {
+  if (!viaInterop || !path.startsWith('/')) return path;
+  const converted = spawnSync('wslpath', ['-w', path], { encoding: 'utf8' });
+  return converted.status === 0 ? converted.stdout.trim() : path;
+}
+
+const asIndex = process.argv.indexOf('--as');
+if (asIndex > 0) {
+  const version = process.argv[asIndex + 1];
+  const into = process.argv[process.argv.indexOf('--into') + 1];
+  if (!version || !into || process.argv.indexOf('--into') < 0) {
+    console.error('usage: node scripts/build.mjs --as <version> --into <folder>');
+    process.exit(2);
+  }
+  mkdirSync(into, { recursive: true });
+  for (const [prefix, ldflags] of variantsFor(version)) {
+    run(go, ['build', '-trimpath', '-ldflags', ldflags, '-o', forGo(join(into, `${prefix}.exe`)), '.'], { ...target, GOARCH: hostArch });
+  }
+  process.exit(0);
+}
 
 if (process.argv.includes('--dist')) {
   // mkdist 是在這台機器上直接執行的小程式，不能帶著給 Windows 用的 GOOS。
@@ -59,13 +95,7 @@ if (process.argv.includes('--dist')) {
     // 檔案還被掃描中就留著，bin/*.exe 已列在 .gitignore，也不會被打包。
   }
 } else {
-  const base = `-s -w -X main.version=${pkg.version}`;
-  // wslbakw 是同一份程式編成沒有主控台視窗的版本，給排程工作用：
-  // 主控台程式被工作排程器啟動時會跳出一個黑色視窗。
-  const variants = [
-    ['wslbak', base],
-    ['wslbakw', `${base} -H=windowsgui`],
-  ];
+  const variants = variantsFor(pkg.version);
   for (const [goarch, name] of [['amd64', 'x64'], ['arm64', 'arm64']]) {
     for (const [prefix, ldflags] of variants) {
       const out = `bin/${prefix}-${name}.exe`;
@@ -73,4 +103,7 @@ if (process.argv.includes('--dist')) {
       console.log(`built ${out} (v${pkg.version})`);
     }
   }
+  // 端對端測試用來在真正的主控台裡執行程式的小工具，不會被打包。
+  run(go, ['build', '-trimpath', '-o', 'bin/e2e-console.exe', 'scripts/e2econsole.go'], { ...target, GOARCH: hostArch });
+  console.log('built bin/e2e-console.exe (test helper)');
 }

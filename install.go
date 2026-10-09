@@ -366,7 +366,8 @@ func registerTask(at string) error {
 func autoCandidates(distros []regDistro) []*regDistro {
 	var list []*regDistro
 	for i := range distros {
-		if _, ok := eligible(distros[i]); ok && !strings.HasPrefix(strings.ToLower(distros[i].Name), "wslbak-e2e-") {
+		isTest := strings.HasPrefix(strings.ToLower(distros[i].Name), "wslbak-e2e-")
+		if _, ok := eligible(distros[i]); ok && isTest == onlyTestDistros() {
 			list = append(list, &distros[i])
 		}
 	}

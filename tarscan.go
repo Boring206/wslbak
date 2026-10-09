@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand/v2"
+	"path"
 	"strings"
 )
 
@@ -38,6 +40,34 @@ type tarIndex struct {
 	// ACL 有存進封存，但 WSL 的匯入不會套用它，還原後會消失。
 	ACLs    int64        `json:"acls"`
 	Samples []fileSample `json:"samples"`
+	// Largest 是最大的幾個檔案。它們太大，不適合抽樣算雜湊，但試還原時至少要確認大小對得上：
+	// 匯入時最容易出事的正是這些檔案。
+	Largest []fileSize `json:"largest,omitempty"`
+}
+
+type fileSize struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+}
+
+// largestCount 是記下大小的檔案數。
+const largestCount = 8
+
+// noteLargest 把一個檔案放進「最大的幾個」裡（由大到小排列）。
+func (idx *tarIndex) noteLargest(path string, size int64) {
+	at := len(idx.Largest)
+	for at > 0 && idx.Largest[at-1].Size < size {
+		at--
+	}
+	if at >= largestCount {
+		return
+	}
+	idx.Largest = append(idx.Largest, fileSize{})
+	copy(idx.Largest[at+1:], idx.Largest[at:])
+	idx.Largest[at] = fileSize{Path: path, Size: size}
+	if len(idx.Largest) > largestCount {
+		idx.Largest = idx.Largest[:largestCount]
+	}
 }
 
 var errTrailingData = errors.New("data after the end-of-archive marker")
@@ -59,12 +89,17 @@ func sampleable(h *tar.Header) bool {
 	if h.Typeflag != tar.TypeReg || h.Size <= 0 || h.Size > sampleMaxSize {
 		return false
 	}
-	for _, r := range h.Name {
+	return plainName(h.Name) && !volatilePaths[h.Name]
+}
+
+// plainName：名稱裡沒有控制字元與反斜線，可以放進交給檢查腳本的清單（一行一個）。
+func plainName(name string) bool {
+	for _, r := range name {
 		if r < 0x20 || r == 0x7f || r == '\\' {
 			return false
 		}
 	}
-	return !volatilePaths[h.Name]
+	return true
 }
 
 // volatilePaths 是 WSL 在 distro 啟動時會自己改寫的檔案，以及試還原時被我們覆寫的檔案。
@@ -115,6 +150,9 @@ func scanTar(r io.Reader, sink func(indexEntry)) (tarIndex, error) {
 		if (h.PAXRecords["SCHILY.acl.access"] != "" || h.PAXRecords["SCHILY.acl.default"] != "") &&
 			!strings.HasPrefix(h.Name, "./var/log/journal") {
 			idx.ACLs++
+		}
+		if h.Typeflag == tar.TypeReg && h.Size > sampleMaxSize && plainName(h.Name) && !volatilePaths[h.Name] {
+			idx.noteLargest(h.Name, h.Size)
 		}
 		if !sampleable(h) {
 			continue
@@ -266,28 +304,79 @@ func (o *overrideReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// lastWSLConf 掃描 tar 串流，回傳最後一個 ./etc/wsl.conf 的內容：解開之後留在磁碟上的就是它。
-// 試還原送出資料的同時會用它再確認一次覆寫確實生效，確認不過就不啟動那個暫時 distro。
-func lastWSLConf(r io.Reader) (content string, found bool, err error) {
-	tr := tar.NewReader(r)
+// overrideSeen 記下某個覆寫檔在串流裡最後一次出現時的樣子。
+type overrideSeen struct {
+	found bool
+	// 那一次是不是出現在我們接上去的那一段裡（而不是封存原本的內容）。
+	ours    bool
+	content string
+}
+
+// overrideCheck 是掃描「實際送去匯入的串流」得到的結論。
+type overrideCheck struct {
+	conf, dist overrideSeen
+	// 串流裡最後一個名為 etc 的項目是目錄。
+	etcIsDir bool
+}
+
+// inert 回報覆寫是否確定生效：兩個檔案最後一次出現都是我們接上去的那一份、內容正是我們寫的，
+// 而且 /etc 是真正的目錄。只看「最後一份的內容對不對」是不夠的：封存如果是別人動過手腳的，
+// 它可以自己帶一份內容相同的 wsl.conf，再讓我們接上去的那一段被當成某個檔案的資料吞掉。
+func (c overrideCheck) inert() bool {
+	return c.etcIsDir &&
+		c.conf.found && c.conf.ours && c.conf.content == inertWSLConf &&
+		c.dist.found && c.dist.ours && c.dist.content == inertDistConf
+}
+
+func (c overrideCheck) summary() string {
+	return fmt.Sprintf("etc is a directory=%v, wsl.conf found=%v ours=%v, wsl-distribution.conf found=%v ours=%v",
+		c.etcIsDir, c.conf.found, c.conf.ours, c.dist.found, c.dist.ours)
+}
+
+// memberKey 把封存裡的名稱化成比對用的樣子。./etc/wsl.conf、etc/wsl.conf、/etc//wsl.conf
+// 解開之後是同一個檔案，所以都要算成同一個名稱。
+func memberKey(name string) string {
+	return strings.TrimPrefix(path.Clean("/"+name), "/")
+}
+
+// scanOverride 掃描送去匯入的 tar 串流；tailStart 是我們接上去的那一段在串流裡開始的位置。
+// 試還原送出資料的同時用它確認覆寫確實生效，確認不過就不啟動那個暫時 distro。
+func scanOverride(r io.Reader, tailStart int64) (overrideCheck, error) {
+	var c overrideCheck
+	counted := &progressReader{r: r}
+	tr := tar.NewReader(counted)
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
-			return content, found, nil
+			return c, nil
 		}
 		if err != nil {
-			return "", false, err
+			return overrideCheck{}, err
 		}
-		if h.Name != "./etc/wsl.conf" {
-			continue
+		// 標頭剛讀完，讀到的位置在它的結尾；標頭本身佔一個區塊。
+		ours := counted.n.Load()-tarBlock >= tailStart
+		switch memberKey(h.Name) {
+		case "etc":
+			c.etcIsDir = h.Typeflag == tar.TypeDir
+		case "etc/wsl.conf":
+			c.conf, err = seeOverride(tr, h, ours)
+		case "etc/wsl-distribution.conf":
+			c.dist, err = seeOverride(tr, h, ours)
 		}
-		found, content = true, ""
-		if h.Typeflag == tar.TypeReg && h.Size <= 1<<20 {
-			data, err := io.ReadAll(tr)
-			if err != nil {
-				return "", false, err
-			}
-			content = string(data)
+		if err != nil {
+			return overrideCheck{}, err
 		}
 	}
+}
+
+func seeOverride(tr *tar.Reader, h *tar.Header, ours bool) (overrideSeen, error) {
+	seen := overrideSeen{found: true, ours: ours}
+	if h.Typeflag == tar.TypeReg && h.Size <= 1<<20 {
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			return overrideSeen{}, err
+		}
+		seen.content = string(data)
+	}
+	return seen, nil
 }

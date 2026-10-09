@@ -7,7 +7,7 @@
 LC_ALL=C
 export LC_ALL
 cd /wslbak-fixture || exit 1
-stat -c '%n|%F|%s|%h|%u:%g|%a|%y' plain.txt sparse.bin cap-binary hard1 hard2 symlink fifo devnull '中文檔名 with space.txt'
+stat -c '%n|%F|%s|%h|%u:%g|%a|%y' plain.txt sparse.bin cap-binary setuid-binary hard1 hard2 symlink fifo devnull '中文檔名 with space.txt'
 echo "sparse stays sparse: $([ "$(stat -c %b sparse.bin)" -lt 100000 ] && echo yes || echo no)"
 echo "hard links share an inode: $([ "$(stat -c %i hard1)" = "$(stat -c %i hard2)" ] && echo yes || echo no)"
 getcap cap-binary 2>/dev/null

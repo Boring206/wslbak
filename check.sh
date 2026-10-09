@@ -5,6 +5,7 @@
 #
 # 變數由 wslbak 加在這份腳本前面的賦值提供：
 #   WSLBAK_SAMPLES  sha256sum -c 格式的清單（「雜湊  路徑」，路徑相對於 /）
+#   WSLBAK_SIZES    最大的幾個檔案，一行一個「大小<TAB>路徑」；只比大小，不讀內容
 #   WSLBAK_UID      備份當時預設使用者的 UID；空的表示不檢查
 
 say() {
@@ -76,6 +77,23 @@ main() {
 				esac
 			done
 			say "samples	$ok	$bad"
+		}
+	fi
+	if [ -n "$WSLBAK_SIZES" ]; then
+		printf '%s\n' "$WSLBAK_SIZES" | {
+			ok=0
+			bad=0
+			while IFS='	' read -r want path; do
+				[ -n "$path" ] || continue
+				got=$(stat -c %s "$path" 2>/dev/null)
+				if [ "$got" = "$want" ]; then
+					ok=$((ok + 1))
+				else
+					bad=$((bad + 1))
+					say "size-bad	$path	expected $want, found ${got:-nothing}"
+				fi
+			done
+			say "sizes	$ok	$bad"
 		}
 	fi
 	say "done"
