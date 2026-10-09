@@ -367,8 +367,13 @@ func run(args []string) int {
 	// 會動到東西的指令才開紀錄檔。--dry-run 只看不動，連紀錄檔都不建立。
 	if !opts.dryRun {
 		switch opts.command {
-		case "init", "config", "run", "verify", "restore", "uninstall":
+		case "init", "run", "verify", "restore", "uninstall":
 			openRunLog()
+		case "config":
+			// 只是顯示設定的話不留紀錄，也就不會在還沒設定過的電腦上建立資料夾。
+			if anyGiven(opts, settingFlags) {
+				openRunLog()
+			}
 		}
 		if opts.command != "uninstall" {
 			ensureInstalledFresh()
