@@ -69,6 +69,8 @@ jobs:
         run: |
           node --version
           # The upgrade test builds an older version with the Go that was set up on Windows.
-          GO_WIN="$(cmd.exe /c where go 2>/dev/null | head -n 1 | tr -d '\r')"
+          # (sed reads everything, unlike head: the step runs with pipefail, and a reader
+          # that leaves early would fail it.)
+          GO_WIN="$(cmd.exe /c where go 2>/dev/null | tr -d '\r' | sed -n '1p' || true)"
           if [ -n "$GO_WIN" ]; then export GO="$(wslpath -u "$GO_WIN")"; fi
           bash scripts/e2e.sh
