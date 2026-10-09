@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -19,6 +20,9 @@ const (
 	// 設成 1 時，沒有指定 distro 的 init 只挑測試用的 distro（平常正好相反），
 	// 測試才能真的執行 init --all，又碰不到別的 distro。
 	envTestOnlyTestDistros = "WSLBAK_TEST_ONLY_TEST_DISTROS"
+	// 取回檔案時，在「解開完」與「搬到目的地」之間停下來：先建立「<值>.reached」這個檔案，
+	// 再等「<值>」這個檔案出現（最多一分鐘）。測試利用這段時間把目的地換成別的東西。
+	envTestHoldBeforeMove = "WSLBAK_TEST_HOLD_BEFORE_MOVE"
 )
 
 // fullAfterWriter 讓前 left 個位元組照常寫入，之後回報磁碟已滿。
@@ -60,4 +64,16 @@ func toastAllowed() bool {
 // onlyTestDistros：自動挑選 distro 時是否只看測試用的那些。
 func onlyTestDistros() bool {
 	return homeOverride != "" && os.Getenv(envTestOnlyTestDistros) == "1"
+}
+
+// testHoldBeforeMove 見 envTestHoldBeforeMove。
+func testHoldBeforeMove() {
+	path := os.Getenv(envTestHoldBeforeMove)
+	if homeOverride == "" || path == "" {
+		return
+	}
+	os.WriteFile(path+".reached", nil, 0o644)
+	for i := 0; i < 600 && !fileExists(path); i++ {
+		time.Sleep(100 * time.Millisecond)
+	}
 }

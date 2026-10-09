@@ -279,7 +279,7 @@ else
 	bad "the files that came back differ from the originals" "$(diff <(echo "$WANT") <(echo "$GOT"))"
 fi
 expect_true "the new folder belongs to the owner of the folder it is in" [ "$(sh_in "$DISTRO" "stat -c %u:%g $BACK")" = "$(sh_in "$DISTRO" "stat -c %u:%g /root")" ]
-expect_true "the temporary link was removed" [ -z "$(sh_in "$DISTRO" 'ls /run/wslbak-* /dev/shm/wslbak-* /tmp/wslbak-* 2>/dev/null')" ]
+expect_true "nothing temporary is left behind" [ -z "$(sh_in "$DISTRO" 'ls -d /.wslbak-restore-* /run/wslbak-* /dev/shm/wslbak-* /tmp/wslbak-* 2>/dev/null')" ]
 run restore --path /wslbak-fixture/plain.txt --into "$BACK" --yes
 expect_rc 2 "restore --path refuses a folder that is not empty"
 expect_has "not empty" "and says why"
@@ -303,7 +303,39 @@ run restore --path /etc/hostname --into relative/folder --yes
 expect_rc 2 "restore --path refuses a target that is not an absolute path"
 run restore --path /etc/hostname --yes
 expect_rc 2 "--path needs --into"
-sh_in "$DISTRO" "rm -rf /root/wslbak-back-$RUN_ID /root/wslbak-back-$RUN_ID-link" >/dev/null
+# A target that exists but is empty is fine too.
+sh_in "$DISTRO" "mkdir $BACK-empty" >/dev/null
+run restore --path /wslbak-fixture/plain.txt --into "$BACK-empty" --yes
+expect_rc 0 "restore --path accepts a target folder that exists and is empty"
+expect_true "and puts the file in it" [ "$(sh_in "$DISTRO" "cat $BACK-empty/wslbak-fixture/plain.txt")" = hello ]
+# The files are first unpacked where only root can go and then moved into place. So a user
+# inside the distro who owns the folder above the target cannot send them somewhere else:
+# here the target becomes a link to a folder of root's while wslbak is still working.
+if [ "$DEFAULT_USER" = tester ]; then
+	sh_in "$DISTRO" 'mkdir -p /wslbak-victim' >/dev/null
+	SWAP="/home/tester/back-$RUN_ID"
+	rm -f "$SANDBOX/hold" "$SANDBOX/hold.reached"
+	ensure_interop
+	env WSLBAK_TEST_HOLD_BEFORE_MOVE="$(wslpath -w "$SANDBOX/hold")" WSLENV="${WSLENV:+$WSLENV:}WSLBAK_TEST_HOLD_BEFORE_MOVE" \
+		timeout 600 "${WB[@]}" restore --path /wslbak-fixture/plain.txt --into "$SWAP" --yes >"$SANDBOX/swap.log" 2>&1 </dev/null &
+	SWAP_PID=$!
+	for _ in $(seq 1 900); do
+		[ -e "$SANDBOX/hold.reached" ] && break
+		sleep 0.2
+	done
+	expect_true "the files were unpacked without anything appearing at the target yet" [ -e "$SANDBOX/hold.reached" -a -z "$(sh_in "$DISTRO" "ls -d $SWAP 2>/dev/null")" ]
+	as_default "$DISTRO" "ln -s /wslbak-victim $SWAP" >/dev/null
+	: >"$SANDBOX/hold"
+	wait "$SWAP_PID"
+	RC=$?
+	OUT="$(tr -d '\r' <"$SANDBOX/swap.log")"
+	expect_rc 2 "restore --path fails when the target is swapped for a link at the last moment"
+	expect_has "could not be put in place" "and says the files could not be put in place"
+	expect_true "nothing was written through the link" [ -z "$(sh_in "$DISTRO" 'ls -A /wslbak-victim')" ]
+	expect_true "the files are kept where only root can reach them" [ "$(sh_in "$DISTRO" 'stat -c "%u %a" /.wslbak-restore-* 2>/dev/null')" = "0 700" ]
+	sh_in "$DISTRO" "rm -rf /.wslbak-restore-* /wslbak-victim; rm -f $SWAP" >/dev/null
+fi
+sh_in "$DISTRO" "rm -rf /root/wslbak-back-$RUN_ID /root/wslbak-back-$RUN_ID-link /root/wslbak-back-$RUN_ID-empty" >/dev/null
 
 section "5. The archive restores with plain wsl --import, without wslbak"
 PLAIN="wslbak-e2e-p-$RUN_ID"
@@ -439,7 +471,8 @@ if registered "$RESTORED"; then
 		expect_true "the user's private key kept its owner and mode" [ "$(as_default "$RESTORED" "$KEY_CHECK")" = "$KEY_WAS" ]
 	fi
 	expect_true "a setuid program is still setuid root" [ "$(sh_in "$RESTORED" 'stat -c "%u %a" /wslbak-fixture/setuid-binary')" = "0 4755" ]
-	if [ "$(sh_in "$DISTRO" 'cat /proc/1/comm')" = systemd ]; then
+	# Only where the test files include the service (its folder is read-only on NixOS).
+	if [ "$(sh_in "$DISTRO" 'test -e /etc/systemd/system/wslbak-e2e.service && cat /proc/1/comm')" = systemd ]; then
 		STARTED=no
 		for _ in $(seq 1 60); do
 			[ "$(sh_in "$RESTORED" 'cat /run/e2e-service-started 2>/dev/null')" = started ] && { STARTED=yes; break; }
@@ -465,6 +498,7 @@ expect_has "from an installed wslbak" "and says where to run init from"
 
 section "12. A distro whose tar is not GNU tar is refused"
 sh_in "$DISTRO" '
+mkdir -p /usr/local/bin
 cat > /usr/local/bin/tar <<"FAKE"
 #!/bin/sh
 echo "tar (busybox) 1.36.1"
@@ -675,6 +709,35 @@ PY
 	expect_rc 0 "the next run succeeds"
 fi
 
+section "13g. Who can read the backups"
+# Backups are not encrypted. On a data drive, other accounts on the PC can usually read a
+# new folder; the sandbox is given the same permission here to see what wslbak says.
+DEST_WIN="$(wslpath -w "$DEST")"
+if win "$SYS32/icacls.exe" "$DEST_WIN" /grant '*S-1-5-11:(OI)(CI)RX' </dev/null >/dev/null 2>&1; then
+	run doctor
+	expect_has "Other accounts on this PC can read" "doctor says when other accounts can read the backups"
+	expect_has "wslbak config --private" "and names the command that changes it"
+	run config --private --dry-run
+	expect_rc 0 "config --private --dry-run succeeds"
+	run doctor
+	expect_has "Other accounts on this PC can read" "and changes nothing"
+	echo mine >"$DEST/someone-elses.txt"
+	run config --private
+	expect_rc 2 "config --private refuses a folder that also holds other things"
+	expect_has "someone-elses.txt" "and names what it found"
+	rm -f "$DEST/someone-elses.txt"
+	run config --private
+	expect_rc 0 "config --private restricts the backup folder"
+	run doctor
+	expect_lacks "Other accounts on this PC can read" "doctor no longer finds other accounts on the list"
+	run run --no-verify
+	expect_rc 0 "a backup still succeeds in the restricted folder"
+	run list
+	expect_rc 0 "and the backups can still be listed"
+else
+	skip "could not change the permissions of the sandbox folder"
+fi
+
 section "14. Other language"
 OUT="$(timeout 60 node bin/wslbak.js --lang zh-TW --home "$HOME_DIR" status </dev/null 2>&1 | tr -d '\r')"
 expect_has "排程：每天 04:30" "--lang zh-TW switches the interface to Chinese"
@@ -748,6 +811,37 @@ run init --at 25:00
 expect_rc 2 "an impossible time"
 run run -d some-other-distro
 expect_rc 2 "a distro that is not set up"
+
+section "15b. From Git Bash"
+# Git Bash rewrites arguments that look like Linux paths into Windows paths before a Windows
+# program sees them: /etc/hostname arrives as C:/Program Files/Git/etc/hostname.
+GITBASH="$(wslpath -u 'C:\Program Files\Git\bin\bash.exe' 2>/dev/null)"
+if fast; then
+	skip "Git Bash (E2E_FAST)"
+elif [ ! -f "$GITBASH" ]; then
+	skip "Git for Windows is not installed"
+else
+	# gitbash <command line>: run it in Git Bash. There, "$WSLBAK" stands for the program
+	# with the sandbox options.
+	gitbash() {
+		ensure_interop
+		OUT="$(cd "$SYS32" && WSLBAK_EXE="$(wslpath -w "$ROOT/$EXE")" WSLBAK_HOME="$(wslpath -w "$HOME_DIR")" \
+			WSLENV="${WSLENV:+$WSLENV:}WSLBAK_EXE:WSLBAK_HOME" timeout 120 "$GITBASH" -c "WSLBAK() { \"\$WSLBAK_EXE\" --lang en --home \"\$WSLBAK_HOME\" \"\$@\"; }; $1" </dev/null 2>&1 | tr -d '\r'; exit "${PIPESTATUS[0]}")"
+		RC=$?
+	}
+	gitbash 'WSLBAK restore --path /wslbak-fixture/plain.txt --into /root/gitbash-back --dry-run'
+	expect_rc 2 "a path that Git Bash rewrote is refused"
+	expect_has "MSYS_NO_PATHCONV" "with the reason and the way around it"
+	gitbash 'MSYS_NO_PATHCONV=1 WSLBAK restore --path /wslbak-fixture/plain.txt --into /root/gitbash-back --dry-run'
+	expect_rc 0 "with MSYS_NO_PATHCONV=1 the same command works"
+	expect_has "no existing file is overwritten" "and plans the restore"
+	gitbash 'WSLBAK files /etc'
+	expect_rc 2 "files with a rewritten path is refused the same way"
+	expect_has "MSYS_NO_PATHCONV" "with the same explanation"
+	gitbash 'MSYS_NO_PATHCONV=1 WSLBAK files /etc'
+	expect_rc 0 "and works with MSYS_NO_PATHCONV=1"
+	expect_has "hostname" "listing the folder"
+fi
 
 section "16. uninstall"
 BEFORE="$(snapshot)"

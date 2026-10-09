@@ -48,6 +48,7 @@ type options struct {
 	all       bool
 	enable    bool
 	disable   bool
+	private   bool
 	help      bool
 	version   bool
 	debug     bool
@@ -64,7 +65,7 @@ func (o *options) has(flag string) bool { return o.given[flag] }
 var commandFlags = map[string][]string{
 	"init": {"--distro", "--all", "--dest", "--keep", "--keep-weekly", "--keep-monthly", "--at", "--webhook", "--dry-run", "--yes"},
 	"config": {"--distro", "--keep", "--keep-weekly", "--keep-monthly", "--at", "--webhook", "--notify", "--verify",
-		"--exclude", "--unexclude", "--enable", "--disable", "--dry-run"},
+		"--exclude", "--unexclude", "--enable", "--disable", "--private", "--dry-run"},
 	"run":       {"--distro", "--no-verify", "--dry-run", "--scheduled"},
 	"list":      {"--distro"},
 	"files":     {"--distro", "--find"},
@@ -96,7 +97,7 @@ var (
 	}
 	boolFlags = map[string]bool{
 		"--dry-run": true, "--no-verify": true, "--scheduled": true, "--yes": true, "--all": true,
-		"--enable": true, "--disable": true, "--help": true, "--version": true, "--debug": true,
+		"--enable": true, "--disable": true, "--private": true, "--help": true, "--version": true, "--debug": true,
 	}
 	shortFlags = map[string]string{"-d": "--distro", "-n": "--dry-run", "-y": "--yes", "-h": "--help", "-v": "--version"}
 )
@@ -178,6 +179,9 @@ func (o *options) setValue(name, value string) error {
 	case "--exclude", "--unexclude":
 		pattern, ok := normalizePattern(value)
 		if !ok {
+			if windowsPathRe.MatchString(value) {
+				return fmt.Errorf(T.WindowsPathGiven, value)
+			}
 			return fmt.Errorf(T.BadPattern, value)
 		}
 		if name == "--exclude" {
@@ -190,8 +194,14 @@ func (o *options) setValue(name, value string) error {
 	case "--to":
 		o.to = value
 	case "--path":
+		if windowsPathRe.MatchString(value) {
+			return fmt.Errorf(T.WindowsPathGiven, value)
+		}
 		o.paths = append(o.paths, value)
 	case "--into":
+		if windowsPathRe.MatchString(value) {
+			return fmt.Errorf(T.WindowsPathGiven, value)
+		}
 		o.into = value
 	case "--find":
 		o.find = value
@@ -218,6 +228,8 @@ func (o *options) setBool(name string) {
 		o.yes = true
 	case "--all":
 		o.all = true
+	case "--private":
+		o.private = true
 	case "--enable":
 		o.enable = true
 	case "--disable":
@@ -408,3 +420,7 @@ func fail(err error) int {
 	fmt.Fprintln(os.Stderr, red(fmt.Sprintf(T.ErrorLine, err)))
 	return 2
 }
+
+// windowsPathRe：C:\… 或 C:/… 這種 Windows 路徑。該給 distro 裡的路徑卻收到這種值，
+// 多半是 Git Bash 把斜線開頭的參數改寫過了：使用者打的明明是 /home/me。
+var windowsPathRe = regexp.MustCompile(`^[A-Za-z]:[\\/]`)

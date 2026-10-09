@@ -89,6 +89,7 @@ wslbak uninstall         移除排程與已安裝的程式；備份不會被刪�
       --exclude <樣式>     config：多排除一個路徑樣式（可重複）
       --unexclude <樣式>   config：取消一個排除（可重複）
       --enable, --disable  config：啟用或停用某個 distro 的備份
+      --private            config：把備份資料夾收緊成只有你的帳號能存取
       --no-verify          run：這次不試還原
       --find <文字>        files：列出檔名或路徑包含這段文字的項目
       --name <名稱>        restore：還原出來的 distro 要叫什麼
@@ -213,6 +214,8 @@ wslbak config --at 02:30
 - 來自 distro 裡的檔名與訊息，顯示時會把控制字元換成看得見的寫法，
   所以名稱動過手腳的檔案沒辦法對你的終端機下指令。
 - 單一檔案只會放回備份資料夾所屬的那個 distro，不管資料夾裡的紀錄怎麼寫。
+  檔案先解開到只有 root 進得去的資料夾，全部到齊才搬到目的地；
+  所以 distro 裡擁有目的地上一層資料夾的使用者，沒辦法靠把目的地換成連結來把檔案引到別處。
 - 由其他程式管理的 distro（`docker-desktop*`、`rancher-desktop*`、`podman-machine-*`）與 WSL1 distro
   會被拒絕並說明原因。
 - 同一時間只有一個 wslbak 在運作；第二個會以結束碼 3 結束。
@@ -241,9 +244,11 @@ wslbak 把真正的大小也寫進那個標頭，備份在那裡也能正確還�
   `wslbak run` 會告訴你有幾個檔案受影響（systemd 的日誌資料夾每次開機都會重設，不計入）。
   用 `--path` 取回單一檔案時，ACL 會保留。
 - **備份沒有加密。** 備份裡是 distro 的全部檔案，私鑰與密碼雜湊都在內。讀得到備份資料夾的人就讀得到這一切；
-  寫得進去的人可以改動備份，或換掉放在那裡的那份程式。和別人共用的電腦或 NAS 上，請把資料夾設成只有你的帳號能存取；
-  這台電腦上有其他帳號讀得到時，`wslbak doctor` 會告訴你。只對別人寫不進去的資料夾裡的備份做驗證與還原：
-  試還原會執行備份裡帶出來的程式。
+  寫得進去的人可以改動備份，或換掉放在那裡的那份程式。這台電腦上有其他帳號讀得到時，`wslbak doctor` 會告訴你；
+  `wslbak config --private` 會把資料夾收緊成只有你的帳號能存取（另外保留系統與系統管理員）。
+  這不是預設值，因為它之後有代價：重灌 Windows 之後，新的帳號不在名單上，
+  要先在檔案總管打開那個資料夾並同意它的詢問，或用系統管理員的終端機，才能還原。
+  只對別人寫不進去的資料夾裡的備份做驗證與還原：試還原會執行備份裡帶出來的程式。
 - **每次都是完整備份。** 目前沒有增量模式。
 - **distro 裡要有 GNU tar。** 只有 BusyBox tar 的（剛裝好的 Alpine）或沒有 tar 的（剛裝好的
   openSUSE Tumbleweed）會被拒絕，並附上安裝它的指令。
@@ -286,9 +291,9 @@ wslbak 把真正的大小也寫進那個標頭，備份在那裡也能正確還�
   `wsl -u root sh -c "echo ':WSLInterop:M::MZ::/init:P' > /proc/sys/fs/binfmt_misc/register"`。
 - **在 WSL 裡出現「無法執行 Windows 程式」。** Windows 互通被停用了；檢查 `/etc/wsl.conf` 的
   `[interop]` 區段，或改從 Windows 使用 wslbak。
-- **在 Git Bash 裡，`--path`、`--into` 與 `files <路徑>` 會失敗或找不到東西。** Git Bash 會把看起來像
-  Linux 路徑的參數改寫掉（`/home/me` 變成 `C:/Program Files/Git/home/me`），wslbak 收到的已經是改過的。
-  在指令前面加上 `MSYS_NO_PATHCONV=1`，或改用 PowerShell、cmd 或 WSL 的 shell。
+- **在 Git Bash 裡，`--path`、`--into` 與 `files <路徑>` 會被當成 Windows 路徑而拒絕。** Git Bash 會把看起來像
+  Linux 路徑的參數改寫掉（`/home/me` 變成 `C:/Program Files/Git/home/me`），wslbak 收到的已經是改過的；
+  它會發現並告訴你。在指令前面加上 `MSYS_NO_PATHCONV=1`，或改用 PowerShell、cmd 或 WSL 的 shell。
 
 ## 開發
 

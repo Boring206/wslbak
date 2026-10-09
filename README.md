@@ -94,6 +94,7 @@ wslbak uninstall         remove the task and the installed program; backups are 
       --exclude <pattern>  config: exclude one more path pattern (repeatable)
       --unexclude <pattern>  config: stop excluding a pattern (repeatable)
       --enable, --disable  config: turn backups of one distro on or off
+      --private            config: let only your account open the backup folder
       --no-verify          run: skip the test restore this time
       --find <text>        files: list entries whose name or path contains this text
       --name <name>        restore: name of the restored distro
@@ -229,7 +230,9 @@ missing, or when the installed program has disappeared.
 - File names and messages that come from inside the distro are shown with control characters made
   visible, so a file with a crafted name cannot send commands to your terminal.
 - Single files only go back into the distro the backup folder belongs to, whatever the records in
-  that folder say.
+  that folder say. They are unpacked in a folder that only root can enter and moved into place when
+  everything is there, so a user inside the distro who owns the folder above the target cannot
+  redirect them by swapping the target for a link.
 - Distros managed by another program (`docker-desktop*`, `rancher-desktop*`, `podman-machine-*`) and
   WSL1 distros are refused with a reason.
 - Only one wslbak works at a time; a second one exits with code 3.
@@ -263,10 +266,13 @@ last 20 hours.
   with `--path` does preserve them.
 - **Backups are not encrypted.** A backup holds every file of the distro, private keys and password
   hashes included. Whoever can read the backup folder can read all of it, and whoever can write to
-  it can alter a backup or the copy of the program kept there. On a PC you share, or on a NAS, keep
-  the folder private to your account; `wslbak doctor` tells you when other accounts on the PC can
-  read it. Only verify or restore backups from a folder that nobody else can write to: a test
-  restore runs programs that come out of the backup.
+  it can alter a backup or the copy of the program kept there. `wslbak doctor` tells you when other
+  accounts on the PC can read the folder, and `wslbak config --private` restricts it to your account
+  (plus SYSTEM and Administrators). That is not done by default because of what it costs later:
+  after reinstalling Windows your new account is not on the list, and you have to open the folder
+  in Explorer and confirm its question, or use an administrator's terminal, before you can restore.
+  Only verify or restore backups from a folder that nobody else can write to: a test restore runs
+  programs that come out of the backup.
 - **Every backup is a full copy.** There is no incremental mode yet.
 - **GNU tar is required inside the distro.** A distro with BusyBox tar (Alpine as it comes) or with no
   tar (openSUSE Tumbleweed as it comes) is refused, with the command that installs it.
@@ -314,10 +320,10 @@ Start with `wslbak doctor`.
   `wsl -u root sh -c "echo ':WSLInterop:M::MZ::/init:P' > /proc/sys/fs/binfmt_misc/register"`.
 - **"cannot run Windows programs" inside WSL.** Windows interop is disabled; check `[interop]` in
   `/etc/wsl.conf`, or use wslbak from Windows instead.
-- **In Git Bash, `--path`, `--into` and `files <path>` fail or find nothing.** Git Bash rewrites
-  arguments that look like Linux paths (`/home/me` becomes `C:/Program Files/Git/home/me`) before
-  wslbak sees them. Put `MSYS_NO_PATHCONV=1` in front of the command, or use PowerShell, cmd or a
-  WSL shell.
+- **In Git Bash, `--path`, `--into` and `files <path>` are refused as Windows paths.** Git Bash
+  rewrites arguments that look like Linux paths (`/home/me` becomes `C:/Program Files/Git/home/me`)
+  before wslbak sees them; wslbak notices and says so. Put `MSYS_NO_PATHCONV=1` in front of the
+  command, or use PowerShell, cmd or a WSL shell.
 
 ## Development
 

@@ -16,6 +16,8 @@ install_tools() {
 		apt-get update -qq && apt-get install -y -qq libcap2-bin acl attr
 	elif command -v dnf >/dev/null 2>&1; then
 		dnf install -y -q tar libcap acl attr findutils
+	elif command -v yum >/dev/null 2>&1; then
+		yum install -y -q tar libcap acl attr findutils
 	elif command -v zypper >/dev/null 2>&1; then
 		zypper --non-interactive --quiet install tar libcap-progs acl attr findutils
 	elif command -v pacman >/dev/null 2>&1; then
@@ -83,7 +85,9 @@ if id tester >/dev/null 2>&1; then
 fi
 
 # A service that leaves a mark when it starts: services must come up in a restored distro.
-if [ -d /etc/systemd/system ]; then
+# (Not where that folder cannot be written to: on NixOS it is part of the read-only store.)
+if [ -d /etc/systemd/system ] && touch /etc/systemd/system/.e2e-probe 2>/dev/null; then
+	rm -f /etc/systemd/system/.e2e-probe
 	cat >/etc/systemd/system/wslbak-e2e.service <<'UNIT'
 [Unit]
 Description=wslbak end-to-end test marker
