@@ -5,6 +5,11 @@
 Scheduled backups of a WSL distro that do not stop it, a test restore after every backup, a
 notification when something fails, and a one-line restore.
 
+![A one-minute tour: setting up, backing up, looking inside a backup, bringing back one file, restoring a whole distro](docs/demo.en.gif)
+
+The same tour as a [video](docs/demo.en.mp4). It is recorded from real runs on a test distro; the
+distro's name and the folder paths are shown the way a user would see them.
+
 Files inside WSL are not covered by OneDrive or most backup tools: they live in one virtual disk, and
 when that disk is damaged or Windows is reinstalled, everything in it is gone. The usual answer is a
 scheduled `wsl --export`, but `wsl --export` terminates the distro before it exports, so your shells,
@@ -335,6 +340,9 @@ npm run build    # builds the four executables in bin/
 npm run e2e      # end-to-end tests inside WSL, against a throwaway distro and a sandbox folder
 npm run dist     # release zips, checksums, and winget and scoop manifests in dist/
 ```
+
+`bash scripts/demo.sh` makes the tour at the top of this page again: it records real commands
+against a throwaway distro and draws the recording. It needs a Python with Pillow on Windows.
 
 `npm run e2e` creates a Debian distro named `wslbak-e2e-<random>` on first use; set
 `KEEP_E2E_DISTRO=1` to keep it for the next run, and remove it with `scripts/e2e-distro.sh destroy`.
