@@ -288,13 +288,13 @@ last 20 hours.
   Windows, open the result at `\\wsl.localhost\<distro>\<folder>`.
 - **Where it has been tested.** Developed on Ubuntu 26.04. The end-to-end suite passes against
   Debian 12 and 13, Ubuntu 20.04, 22.04 and 24.04, Fedora 44, AlmaLinux 8 and 9, Rocky Linux 9,
-  Arch Linux, openSUSE Tumbleweed, Kali, Gentoo and Alpine 3.24 (GNU tar 1.30 to 1.35), on Windows 11
-  (build 26300), Windows Server 2025 (build 26100) and Windows Server 2022 (build 20348, the
-  generation of Windows 10). On NixOS, backups, test restores and single-file restores work; the
-  rest of the suite has not been completed there. The arm64 executables start and pass the unit
-  tests on arm64 Windows, where no WSL was available to back up. Not tried yet: Windows 10 itself,
-  Microsoft Defender's real-time protection, a PC with Docker Desktop, and distros of 100 GB or
-  more; reports are welcome.
+  Oracle Linux 7, 8 and 9, Arch Linux, openSUSE Tumbleweed, Kali, Gentoo, NixOS and Alpine 3.24
+  (GNU tar 1.26 to 1.35); with WSL 2.7 and 3.0; on Windows 11 (build 26300), Windows Server 2025
+  (build 26100) and Windows Server 2022 (build 20348, the generation of Windows 10); and with
+  Avast and with Microsoft Defender's real-time protection switched on. The arm64 executables
+  start and pass the unit tests on arm64 Windows, where no WSL was available to back up. Not tried
+  yet: Windows 10 itself, a PC with Docker Desktop, and distros of 100 GB or more; reports are
+  welcome.
 
 ## Troubleshooting
 
