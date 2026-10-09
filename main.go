@@ -20,32 +20,54 @@ var version = "dev"
 
 type options struct {
 	command string
-	id      string // verify／restore 指定的備份編號；空的表示最新一份
+	id      string // verify／restore／files 指定的備份編號；空的表示最新一份
+	target  string // files 要看的路徑；空的表示根目錄
 
-	distro  string
-	dest    string
-	keep    int
-	at      string
-	webhook string
-	name    string
-	to      string
-	home    string // 測試用：把設定、紀錄與驗證用的暫存都放到這個資料夾
+	distro      string
+	dest        string
+	keep        int
+	keepWeekly  int
+	keepMonthly int
+	at          string
+	webhook     string
+	notify      string
+	verify      string
+	exclude     []string
+	unexclude   []string
+	name        string
+	to          string
+	find        string
+	home        string // 測試用：把設定、紀錄與驗證用的暫存都放到這個資料夾
 
 	dryRun    bool
 	noVerify  bool
 	scheduled bool // 由排程工作啟動：還沒到期就直接結束，也不詢問任何事
 	yes       bool
+	all       bool
+	enable    bool
+	disable   bool
 	help      bool
 	version   bool
 	debug     bool
+
+	// given 記下哪些旗標出現過（完整名稱）。有些值的零值本身有意義（例如 --keep-weekly 0），
+	// 不能靠值是不是零來判斷使用者有沒有指定。
+	given map[string]bool
 }
+
+// has 回報使用者有沒有給這個旗標。
+func (o *options) has(flag string) bool { return o.given[flag] }
 
 // commandFlags 是每個指令各自接受的旗標；全域旗標（globalFlags）不列在這裡。
 var commandFlags = map[string][]string{
-	"init":      {"--distro", "--dest", "--keep", "--at", "--webhook", "--dry-run", "--yes"},
+	"init": {"--distro", "--all", "--dest", "--keep", "--keep-weekly", "--keep-monthly", "--at", "--webhook", "--dry-run", "--yes"},
+	"config": {"--distro", "--keep", "--keep-weekly", "--keep-monthly", "--at", "--webhook", "--notify", "--verify",
+		"--exclude", "--unexclude", "--enable", "--disable", "--dry-run"},
 	"run":       {"--distro", "--no-verify", "--dry-run", "--scheduled"},
 	"list":      {"--distro"},
+	"files":     {"--distro", "--find"},
 	"status":    {},
+	"doctor":    {"--distro"},
 	"verify":    {"--distro"},
 	"restore":   {"--distro", "--name", "--to", "--dry-run", "--yes"},
 	"uninstall": {"--dry-run", "--yes"},
@@ -54,17 +76,21 @@ var commandFlags = map[string][]string{
 // takesID 是後面可以再接一個備份編號的指令。
 var takesID = map[string]bool{"verify": true, "restore": true}
 
+// conflicts 是不能同時出現的旗標。
+var conflicts = [][2]string{{"--enable", "--disable"}, {"--all", "--distro"}}
+
 var globalFlags = map[string]bool{"--lang": true, "--home": true, "--debug": true, "--help": true, "--version": true}
 
 // valueFlags 後面要接一個值，boolFlags 不用。
 var (
 	valueFlags = map[string]bool{
-		"--distro": true, "--dest": true, "--keep": true, "--at": true, "--webhook": true,
-		"--name": true, "--to": true, "--home": true, "--lang": true,
+		"--distro": true, "--dest": true, "--keep": true, "--keep-weekly": true, "--keep-monthly": true,
+		"--at": true, "--webhook": true, "--notify": true, "--verify": true, "--exclude": true, "--unexclude": true,
+		"--name": true, "--to": true, "--find": true, "--home": true, "--lang": true,
 	}
 	boolFlags = map[string]bool{
-		"--dry-run": true, "--no-verify": true, "--scheduled": true, "--yes": true,
-		"--help": true, "--version": true, "--debug": true,
+		"--dry-run": true, "--no-verify": true, "--scheduled": true, "--yes": true, "--all": true,
+		"--enable": true, "--disable": true, "--help": true, "--version": true, "--debug": true,
 	}
 	shortFlags = map[string]string{"-d": "--distro", "-n": "--dry-run", "-y": "--yes", "-h": "--help", "-v": "--version"}
 )
@@ -85,18 +111,46 @@ func normalizeClock(s string) (string, bool) {
 	return fmt.Sprintf("%02d:%02d", hour, minute), true
 }
 
+// normalizePattern 把排除樣式整理成 tar 看得懂的樣子：相對於 / 而且以 ./ 開頭。
+// 使用者寫 /home/*/Downloads/* 或 ./home/*/Downloads/* 都可以。
+func normalizePattern(s string) (string, bool) {
+	if strings.ContainsAny(s, "\x00\n\r") {
+		return "", false
+	}
+	switch {
+	case strings.HasPrefix(s, "./"):
+	case strings.HasPrefix(s, "/"):
+		s = "." + s
+	default:
+		return "", false
+	}
+	if len(s) <= 2 {
+		// 「/」或「./」會把整個 distro 都排除掉。
+		return "", false
+	}
+	return s, true
+}
+
 func (o *options) setValue(name, value string) error {
+	count := func(min int, bad string) (int, error) {
+		n, err := strconv.Atoi(value)
+		if err != nil || n < min {
+			return 0, fmt.Errorf(bad, value)
+		}
+		return n, nil
+	}
+	var err error
 	switch name {
 	case "--distro":
 		o.distro = value
 	case "--dest":
 		o.dest = value
 	case "--keep":
-		n, err := strconv.Atoi(value)
-		if err != nil || n < 1 {
-			return fmt.Errorf(T.BadKeep, value)
-		}
-		o.keep = n
+		o.keep, err = count(1, T.BadKeep)
+	case "--keep-weekly":
+		o.keepWeekly, err = count(0, T.BadCount)
+	case "--keep-monthly":
+		o.keepMonthly, err = count(0, T.BadCount)
 	case "--at":
 		clock, ok := normalizeClock(value)
 		if !ok {
@@ -105,10 +159,32 @@ func (o *options) setValue(name, value string) error {
 		o.at = clock
 	case "--webhook":
 		o.webhook = value
+	case "--notify":
+		if value != notifyOnFailure && value != notifyAlways {
+			return fmt.Errorf(T.BadNotify, value)
+		}
+		o.notify = value
+	case "--verify":
+		if value != verifyRestore && value != verifyNone {
+			return fmt.Errorf(T.BadVerify, value)
+		}
+		o.verify = value
+	case "--exclude", "--unexclude":
+		pattern, ok := normalizePattern(value)
+		if !ok {
+			return fmt.Errorf(T.BadPattern, value)
+		}
+		if name == "--exclude" {
+			o.exclude = append(o.exclude, pattern)
+		} else {
+			o.unexclude = append(o.unexclude, pattern)
+		}
 	case "--name":
 		o.name = value
 	case "--to":
 		o.to = value
+	case "--find":
+		o.find = value
 	case "--home":
 		o.home = value
 	case "--lang":
@@ -117,7 +193,7 @@ func (o *options) setValue(name, value string) error {
 			return fmt.Errorf(T.BadLang, value)
 		}
 	}
-	return nil
+	return err
 }
 
 func (o *options) setBool(name string) {
@@ -130,6 +206,12 @@ func (o *options) setBool(name string) {
 		o.scheduled = true
 	case "--yes":
 		o.yes = true
+	case "--all":
+		o.all = true
+	case "--enable":
+		o.enable = true
+	case "--disable":
+		o.disable = true
 	case "--help":
 		o.help = true
 	case "--version":
@@ -140,8 +222,9 @@ func (o *options) setBool(name string) {
 }
 
 // parseArgs 解析參數；旗標可以放在指令前面或後面，值可以寫成 --flag 值 或 --flag=值。
+// --exclude 這類旗標可以重複出現。
 func parseArgs(args []string) (options, error) {
-	var o options
+	o := options{given: map[string]bool{}}
 	var used, positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -177,6 +260,7 @@ func parseArgs(args []string) (options, error) {
 			positional = append(positional, a)
 			continue
 		}
+		o.given[name] = true
 		if !globalFlags[name] {
 			used = append(used, name)
 		}
@@ -200,8 +284,22 @@ func parseArgs(args []string) (options, error) {
 			return o, fmt.Errorf(T.FlagNotForCommand, flag, o.command)
 		}
 	}
+	for _, pair := range conflicts {
+		if o.given[pair[0]] && o.given[pair[1]] {
+			return o, fmt.Errorf(T.FlagConflict, pair[0], pair[1])
+		}
+	}
 	rest := positional[1:]
-	if len(rest) > 0 && takesID[o.command] {
+	switch {
+	case o.command == "files":
+		// files [編號] [路徑]：第一個長得像編號就是編號，否則是路徑。
+		if len(rest) > 0 && backupIDRe.MatchString(rest[0]) {
+			o.id, rest = rest[0], rest[1:]
+		}
+		if len(rest) > 0 {
+			o.target, rest = rest[0], rest[1:]
+		}
+	case len(rest) > 0 && takesID[o.command]:
 		o.id, rest = rest[0], rest[1:]
 	}
 	if len(rest) > 0 {
@@ -254,7 +352,7 @@ func run(args []string) int {
 	// 會動到東西的指令才開紀錄檔。--dry-run 只看不動，連紀錄檔都不建立。
 	if !opts.dryRun {
 		switch opts.command {
-		case "init", "run", "verify", "restore", "uninstall":
+		case "init", "config", "run", "verify", "restore", "uninstall":
 			openRunLog()
 		}
 		if opts.command != "uninstall" {
@@ -264,12 +362,18 @@ func run(args []string) int {
 	switch opts.command {
 	case "init":
 		return cmdInit(opts)
+	case "config":
+		return cmdConfig(opts)
 	case "run":
 		return cmdRun(opts)
 	case "list":
 		return cmdList(opts)
+	case "files":
+		return cmdFiles(opts)
 	case "status":
 		return cmdStatus(opts)
+	case "doctor":
+		return cmdDoctor(opts)
 	case "verify":
 		return cmdVerify(opts)
 	case "restore":

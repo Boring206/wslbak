@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -148,6 +152,37 @@ func installExes() error {
 	return os.WriteFile(installedVersionPath(dir), []byte(version+"\n"), 0o644)
 }
 
+// warmUpLimit 是等新安裝的程式啟動的時間上限；warmUpSlow 以上就值得告訴使用者。
+const (
+	warmUpLimit = 2 * time.Minute
+	warmUpSlow  = 10 * time.Second
+)
+
+// warmUp 把剛放到固定位置的兩個執行檔各執行一次（只印版本就結束）。
+//
+// 沒有簽章的新檔案第一次執行時，防毒軟體常會先扣住它檢查，有的還會把它關進沙箱；
+// 排程是在半夜沒人的時候才第一次執行那個檔案，那時被扣住就沒有人知道。
+// 所以趁使用者在場先執行一次：檢查在這時發生，被擋下來也能馬上說。
+// 回傳花掉的時間；problem 不是空字串表示有執行檔啟動不了。
+func warmUp(dir string) (took time.Duration, problem string) {
+	began := time.Now()
+	for _, name := range []string{installedCLI, installedGUI} {
+		exe := filepath.Join(dir, name)
+		ctx, cancel := context.WithTimeout(context.Background(), warmUpLimit)
+		cmd := exec.CommandContext(ctx, exe, "--version")
+		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
+		cmd.WaitDelay = waitDelay
+		err := cmd.Run()
+		cancel()
+		if err != nil {
+			logf("warm-up of %s failed after %v: %v", exe, time.Since(began).Round(time.Millisecond), err)
+			return time.Since(began), fmt.Sprintf(T.WarmUpFailed, exe)
+		}
+	}
+	logf("warm-up of the installed programs took %v", time.Since(began).Round(time.Millisecond))
+	return time.Since(began), ""
+}
+
 // ensureInstalledFresh 在「從 npm 那一份執行」時，把固定位置的那一份更新成同一版。
 // 沒有安裝過、自己就是固定位置的那一份、或自己是備份資料夾裡的還原用程式（旁邊沒有無視窗版）時什麼都不做。
 // 不降版：固定位置的版本比較新就不動它。
@@ -181,6 +216,9 @@ func ensureInstalledFresh() {
 		return
 	}
 	logf("refreshed the installed copy in %s to %s", dir, version)
+	if _, problem := warmUp(dir); problem != "" {
+		fmt.Fprintln(os.Stderr, yellow(problem))
+	}
 }
 
 // installedProblem 檢查固定位置的程式還在不在；有問題時回傳給使用者看的說明。
@@ -273,36 +311,16 @@ func defaultDest(basePath string) string {
 	return filepath.Join(profile, "WSLBackup")
 }
 
-// chooseDistro 決定要設定哪個 distro：有指定就用指定的，否則必須剛好只有一個可以備份。
+// chooseDistro 找出指定名稱的 distro，並確認它能備份。
 func chooseDistro(distros []regDistro, name string) (*regDistro, error) {
-	if name != "" {
-		d := findDistro(distros, name)
-		if d == nil {
-			return nil, fmt.Errorf(T.NoSuchDistro, name)
-		}
-		if reason, ok := eligible(*d); !ok {
-			return nil, fmt.Errorf(T.DistroNotEligible, d.Name, reason)
-		}
-		return d, nil
+	d := findDistro(distros, name)
+	if d == nil {
+		return nil, fmt.Errorf(T.NoSuchDistro, name)
 	}
-	var candidates []*regDistro
-	for i := range distros {
-		// 開發時用的測試 distro 不自動選；要備份它就明確指定。
-		if _, ok := eligible(distros[i]); ok && !strings.HasPrefix(strings.ToLower(distros[i].Name), "wslbak-e2e-") {
-			candidates = append(candidates, &distros[i])
-		}
+	if reason, ok := eligible(*d); !ok {
+		return nil, fmt.Errorf(T.DistroNotEligible, d.Name, reason)
 	}
-	switch len(candidates) {
-	case 0:
-		return nil, errors.New(T.NoEligibleDistro)
-	case 1:
-		return candidates[0], nil
-	}
-	names := make([]string, len(candidates))
-	for i, d := range candidates {
-		names[i] = d.Name
-	}
-	return nil, fmt.Errorf(T.WhichDistro, strings.Join(names, T.ListSep))
+	return d, nil
 }
 
 // writable 確認資料夾真的寫得進去（「受控資料夾存取」會擋下沒被允許的程式）。
@@ -320,6 +338,101 @@ func writable(dir string) error {
 func validWebhook(raw string) bool {
 	u, err := url.Parse(raw)
 	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != ""
+}
+
+// registerTask 建立（或取代）每日的排程工作，指向固定位置的無視窗版程式。
+func registerTask(at string) error {
+	sid, err := currentSID()
+	if err != nil {
+		return err
+	}
+	programDir, err := installDir()
+	if err != nil {
+		return err
+	}
+	task := taskSpec{SID: sid, Command: filepath.Join(programDir, installedGUI), Arguments: taskArguments(),
+		At: at, LogonDelay: true, Description: T.TaskDescription}
+	if err := createTask(task); err != nil {
+		// 有些環境不讓一般使用者建立「登入時」的觸發；退回只有每天定時。
+		logf("create task with a logon trigger: %v", err)
+		task.LogonDelay = false
+		return createTask(task)
+	}
+	return nil
+}
+
+// autoCandidates 是沒有指定 distro 時可以自動挑選的那些：能備份，而且不是開發時用的測試 distro
+// （要備份測試 distro 就明確用 -d 指定）。
+func autoCandidates(distros []regDistro) []*regDistro {
+	var list []*regDistro
+	for i := range distros {
+		if _, ok := eligible(distros[i]); ok && !strings.HasPrefix(strings.ToLower(distros[i].Name), "wslbak-e2e-") {
+			list = append(list, &distros[i])
+		}
+	}
+	return list
+}
+
+// parsePick 解讀「選哪一個」的回答：編號（從 1 開始）選一個，a 或 all 全選。
+func parsePick(answer string, count int) (indexes []int, ok bool) {
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	if answer == "a" || answer == "all" {
+		for i := 0; i < count; i++ {
+			indexes = append(indexes, i)
+		}
+		return indexes, count > 0
+	}
+	n, err := strconv.Atoi(answer)
+	if err != nil || n < 1 || n > count {
+		return nil, false
+	}
+	return []int{n - 1}, true
+}
+
+// chooseDistros 決定 init 要設定哪些 distro：-d 指定一個、--all 全部、只有一個可選時就是它；
+// 有好幾個而且可以發問時列出來讓使用者選。
+func chooseDistros(distros []regDistro, opts options) ([]*regDistro, error) {
+	if opts.distro != "" {
+		d, err := chooseDistro(distros, opts.distro)
+		if err != nil {
+			return nil, err
+		}
+		return []*regDistro{d}, nil
+	}
+	candidates := autoCandidates(distros)
+	names := make([]string, len(candidates))
+	for i, d := range candidates {
+		names[i] = d.Name
+	}
+	switch {
+	case len(candidates) == 0:
+		return nil, errors.New(T.NoEligibleDistro)
+	case opts.all || len(candidates) == 1:
+		return candidates, nil
+	case opts.yes || opts.dryRun:
+		return nil, fmt.Errorf(T.WhichDistroOrAll, strings.Join(names, T.ListSep))
+	}
+	for i, name := range names {
+		fmt.Fprintf(promptOut, "  [%d] %s\n", i+1, name)
+	}
+	answer, _ := ask(T.AskPick)
+	picked, ok := parsePick(answer, len(candidates))
+	if !ok {
+		return nil, fmt.Errorf(T.WhichDistroOrAll, strings.Join(names, T.ListSep))
+	}
+	chosen := make([]*regDistro, len(picked))
+	for i, index := range picked {
+		chosen[i] = candidates[index]
+	}
+	return chosen, nil
+}
+
+// initTarget 是 init 要設定的一個 distro，以及替它查好、算好的東西。
+type initTarget struct {
+	d        *regDistro
+	info     probeInfo
+	existing *distroConfig
+	settings distroConfig // 套用之後的樣子
 }
 
 func cmdInit(opts options) int {
@@ -342,7 +455,7 @@ func cmdInit(opts options) int {
 	if err != nil {
 		return fail(err)
 	}
-	d, err := chooseDistro(distros, opts.distro)
+	chosen, err := chooseDistros(distros, opts)
 	if err != nil {
 		return fail(err)
 	}
@@ -360,23 +473,41 @@ func cmdInit(opts options) int {
 	if cfg == nil {
 		cfg = newConfig()
 	}
-	existing := cfg.Distros[d.Name]
 
-	fmt.Printf(T.InitProbing+"\n", d.Name)
-	info, err := probeDistro(d.Name)
-	if err != nil {
-		return fail(fmt.Errorf(T.ProbeFailed, d.Name, err))
+	var targets []initTarget
+	for _, d := range chosen {
+		fmt.Printf(T.InitProbing+"\n", d.Name)
+		info, err := probeDistro(d.Name)
+		problem := ""
+		switch {
+		case err != nil:
+			problem = fmt.Sprintf(T.ProbeFailed, d.Name, err)
+		case info.TarKind != "gnu":
+			problem = T.BackupNotGNUTar
+		}
+		if problem != "" {
+			if len(chosen) == 1 {
+				return fail(errors.New(problem))
+			}
+			// 一次設定好幾個時，有問題的那個跳過，其他照做。
+			fmt.Println(yellow(fmt.Sprintf(T.InitSkipped, d.Name, problem)))
+			continue
+		}
+		targets = append(targets, initTarget{d: d, info: info, existing: cfg.Distros[d.Name]})
 	}
-	if info.TarKind != "gnu" {
-		return fail(errors.New(T.BackupNotGNUTar))
+	if len(targets) == 0 {
+		return fail(errors.New(T.NoEligibleDistro))
 	}
 
+	// 目的地是所有 distro 共用的根資料夾，各自在底下有一個以名稱命名的子資料夾。
 	dest := opts.dest
-	if dest == "" && existing != nil {
-		dest = existing.Dest
+	for _, t := range targets {
+		if dest == "" && t.existing != nil {
+			dest = t.existing.Dest
+		}
 	}
 	if dest == "" {
-		dest = defaultDest(d.BasePath)
+		dest = defaultDest(targets[0].d.BasePath)
 		if !opts.yes && !opts.dryRun {
 			if ans, ok := ask(fmt.Sprintf(T.AskDest, dest)); ok && ans != "" {
 				dest = ans
@@ -396,13 +527,7 @@ func cmdInit(opts options) int {
 	if isFAT(destVol.FS) {
 		return fail(fmt.Errorf(T.DestFAT, destVol.Root, destVol.FS))
 	}
-	keep, at, webhook := defaultKeep, cfg.At, cfg.Notify.Webhook
-	if existing != nil {
-		keep = existing.Keep
-	}
-	if opts.keep > 0 {
-		keep = opts.keep
-	}
+	at, webhook := cfg.At, cfg.Notify.Webhook
 	if opts.at != "" {
 		at = opts.at
 	}
@@ -411,6 +536,26 @@ func cmdInit(opts options) int {
 	}
 	if webhook != "" && !validWebhook(webhook) {
 		return fail(fmt.Errorf(T.BadWebhook, webhook))
+	}
+	var totalUsed, largestUsed int64
+	for i := range targets {
+		t := &targets[i]
+		t.settings = distroConfig{Keep: defaultKeep, DefaultExcludes: true}
+		if t.existing != nil {
+			t.settings = *t.existing
+		}
+		t.settings.ID, t.settings.Dest, t.settings.Enabled = t.d.GUID, dest, true
+		if opts.has("--keep") {
+			t.settings.Keep = opts.keep
+		}
+		if opts.has("--keep-weekly") {
+			t.settings.KeepWeekly = opts.keepWeekly
+		}
+		if opts.has("--keep-monthly") {
+			t.settings.KeepMonthly = opts.keepMonthly
+		}
+		totalUsed += t.info.UsedBytes
+		largestUsed = max(largestUsed, t.info.UsedBytes)
 	}
 	sid, err := currentSID()
 	if err != nil {
@@ -422,19 +567,19 @@ func cmdInit(opts options) int {
 	}
 	configFile, _ := configPath()
 	verifyDir, _ := verifyRoot()
-	task := taskSpec{SID: sid, Command: filepath.Join(programDir, installedGUI), Arguments: taskArguments(),
-		At: at, LogonDelay: true, Description: T.TaskDescription}
 
 	// —— 把要做的事攤開來 ——
 	fmt.Println()
 	fmt.Println(bold(T.InitPlanTitle))
 	row := func(label, value string) { fmt.Printf("  %s %s\n", pad(label, labelWidth(T.InitLabels[:])), value) }
-	row(T.InitLabels[0], fmt.Sprintf(T.InitDistroLine, d.Name, info.OS, humanBytes(info.UsedBytes)))
-	row(T.InitLabels[1], filepath.Join(dest, d.Name))
-	row(T.InitLabels[2], fmt.Sprintf(T.InitKeepLine, keep))
+	for _, t := range targets {
+		row(T.InitLabels[0], fmt.Sprintf(T.InitDistroLine, t.d.Name, t.info.OS, humanBytes(t.info.UsedBytes)))
+		row(T.InitLabels[1], filepath.Join(dest, t.d.Name))
+		row(T.InitLabels[2], keepText(&t.settings))
+	}
 	row(T.InitLabels[3], fmt.Sprintf(T.InitAtLine, at))
 	if cfg.Verify == verifyRestore {
-		row(T.InitLabels[4], fmt.Sprintf(T.InitVerifyLine, volumeRoot(verifyDir), humanBytes(int64(verifySpaceNeeded(info.UsedBytes)))))
+		row(T.InitLabels[4], fmt.Sprintf(T.InitVerifyLine, volumeRoot(verifyDir), humanBytes(int64(verifySpaceNeeded(largestUsed)))))
 	} else {
 		row(T.InitLabels[4], T.InitVerifyOff)
 	}
@@ -450,7 +595,7 @@ func cmdInit(opts options) int {
 	}
 	change(T.InitChangeLabels[0], filepath.Join(programDir, installedCLI)+T.ListSep+installedGUI)
 	change(T.InitChangeLabels[1], configFile)
-	change(T.InitChangeLabels[2], fmt.Sprintf(T.InitTaskLine, taskName(sid), task.Command, task.Arguments))
+	change(T.InitChangeLabels[2], fmt.Sprintf(T.InitTaskLine, taskName(sid), filepath.Join(programDir, installedGUI), taskArguments()))
 	if homeOverride == "" {
 		change(T.InitChangeLabels[3], `HKCU\`+toastAppKey)
 	}
@@ -460,25 +605,34 @@ func cmdInit(opts options) int {
 	fmt.Println(T.InitNever)
 
 	// —— 使用者應該先知道的事 ——
-	if sameVolume(dest, d.BasePath) {
-		fmt.Println(yellow(fmt.Sprintf(T.WarnSameVolume, destVol.Root)))
-	} else if a, okA := diskNumber(destVol.Root); okA {
-		if b, okB := diskNumber(volumeRoot(d.BasePath)); okB && a == b {
-			fmt.Println(yellow(fmt.Sprintf(T.WarnSameDisk, destVol.Root, volumeRoot(d.BasePath))))
+	warned := map[string]bool{}
+	warn := func(text string) {
+		if !warned[text] {
+			warned[text] = true
+			fmt.Println(yellow(text))
+		}
+	}
+	for _, t := range targets {
+		if sameVolume(dest, t.d.BasePath) {
+			warn(fmt.Sprintf(T.WarnSameVolume, destVol.Root))
+		} else if a, okA := diskNumber(destVol.Root); okA {
+			if b, okB := diskNumber(volumeRoot(t.d.BasePath)); okB && a == b {
+				warn(fmt.Sprintf(T.WarnSameDisk, destVol.Root, volumeRoot(t.d.BasePath)))
+			}
 		}
 	}
 	if !destVol.Fixed {
-		fmt.Println(yellow(fmt.Sprintf(T.WarnRemovable, destVol.Root)))
+		warn(fmt.Sprintf(T.WarnRemovable, destVol.Root))
 	}
 	if one := os.Getenv("OneDrive"); one != "" && strings.HasPrefix(normPath(dest)+`\`, normPath(one)+`\`) {
-		fmt.Println(yellow(T.WarnOneDrive))
+		warn(T.WarnOneDrive)
 	}
-	if uint64(info.UsedBytes) > destVol.Free {
-		fmt.Println(yellow(fmt.Sprintf(T.WarnDestSpace, destVol.Root, humanBytes(int64(destVol.Free)))))
+	if uint64(totalUsed) > destVol.Free {
+		warn(fmt.Sprintf(T.WarnDestSpace, destVol.Root, humanBytes(int64(destVol.Free))))
 	}
 	if cfg.Verify == verifyRestore {
-		if v, err := volumeOf(verifyDir); err == nil && v.Free < verifySpaceNeeded(info.UsedBytes) {
-			fmt.Println(yellow(fmt.Sprintf(T.WarnVerifySpace, v.Root, humanBytes(int64(v.Free)))))
+		if v, err := volumeOf(verifyDir); err == nil && v.Free < verifySpaceNeeded(largestUsed) {
+			warn(fmt.Sprintf(T.WarnVerifySpace, v.Root, humanBytes(int64(v.Free))))
 		}
 	}
 
@@ -493,20 +647,28 @@ func cmdInit(opts options) int {
 	}
 
 	// —— 動手 ——
-	if err := writable(filepath.Join(dest, d.Name)); err != nil {
-		return fail(fmt.Errorf(T.DestNotWritable, dest, err))
+	for _, t := range targets {
+		if err := writable(filepath.Join(dest, t.d.Name)); err != nil {
+			return fail(fmt.Errorf(T.DestNotWritable, dest, err))
+		}
 	}
 	if normPath(cli) != normPath(filepath.Join(programDir, installedCLI)) {
 		if err := installExes(); err != nil {
 			return fail(fmt.Errorf(T.InstallFailed, programDir, err))
 		}
+		switch took, problem := warmUp(programDir); {
+		case problem != "":
+			return fail(errors.New(problem))
+		case took > warmUpSlow:
+			fmt.Println(dim(fmt.Sprintf(T.WarmUpSlow, humanDuration(took))))
+		}
 	}
-	dc := &distroConfig{DefaultExcludes: true}
-	if existing != nil {
-		dc = existing
+	names := make([]string, len(targets))
+	for i, t := range targets {
+		settings := t.settings
+		cfg.Distros[t.d.Name] = &settings
+		names[i] = t.d.Name
 	}
-	dc.ID, dc.Dest, dc.Keep, dc.Enabled = d.GUID, dest, keep, true
-	cfg.Distros[d.Name] = dc
 	cfg.At, cfg.Notify.Webhook = at, webhook
 	if homeOverride != "" {
 		// 測試用的沙箱不跳通知。
@@ -520,18 +682,13 @@ func cmdInit(opts options) int {
 			logf("register toast app: %v", err)
 		}
 	}
-	if err := createTask(task); err != nil {
-		// 有些環境不讓一般使用者建立「登入時」的觸發；退回只有每天定時。
-		logf("create task with a logon trigger: %v", err)
-		task.LogonDelay = false
-		if err := createTask(task); err != nil {
-			return fail(fmt.Errorf(T.TaskFailed, err))
-		}
+	if err := registerTask(at); err != nil {
+		return fail(fmt.Errorf(T.TaskFailed, err))
 	}
 	if err := refreshRestoreKit(dest); err != nil {
 		logf("restore kit in %s: %v", dest, err)
 	}
-	logf("init: distro=%s dest=%s keep=%d at=%s task=%s", d.Name, dest, keep, at, taskName(sid))
+	logf("init: distros=%v dest=%s at=%s task=%s", names, dest, at, taskName(sid))
 	fmt.Println(green(fmt.Sprintf(T.InitDone, at)))
 
 	if opts.yes {
@@ -545,7 +702,11 @@ func cmdInit(opts options) int {
 	// 交給 run 自己去拿鎖。
 	release()
 	release = nil
-	return cmdRun(options{command: "run", distro: d.Name})
+	run := options{command: "run"}
+	if len(names) == 1 {
+		run.distro = names[0]
+	}
+	return cmdRun(run)
 }
 
 func cmdUninstall(opts options) int {

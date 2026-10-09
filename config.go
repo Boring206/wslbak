@@ -36,9 +36,12 @@ type notifyConfig struct {
 type distroConfig struct {
 	// ID 是登錄檔裡的 GUID。同名的 distro 被移除重裝之後 GUID 會不同，
 	// 這時不該默默把新的 distro 接著備份到舊的那一串後面。
-	ID              string   `json:"id"`
-	Dest            string   `json:"dest"`
+	ID   string `json:"id"`
+	Dest string `json:"dest"`
+	// Keep 是保留最新的幾份；KeepWeekly、KeepMonthly 是在那之外，每週、每月各再留一份，留幾週、幾個月。
 	Keep            int      `json:"keep"`
+	KeepWeekly      int      `json:"keepWeekly,omitempty"`
+	KeepMonthly     int      `json:"keepMonthly,omitempty"`
 	Exclude         []string `json:"exclude"`
 	DefaultExcludes bool     `json:"defaultExcludes"`
 	Enabled         bool     `json:"enabled"`

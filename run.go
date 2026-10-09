@@ -178,7 +178,7 @@ func runOne(opts options, cfg *config, name string, distros []regDistro, wsl str
 		}
 		// 這次備份如果通過試還原，會擠掉哪些舊的。
 		planned := append(listBackups(dir), &manifest{ID: time.Now().UTC().Format(idLayout), Verify: &verifyResult{OK: doVerify}})
-		for _, m := range planPrune(planned, dc.Keep, cfg.Verify) {
+		for _, m := range planRetention(planned, dc.retention(), cfg.Verify) {
 			fmt.Printf("  "+T.DryRunWouldPrune+"\n", m.ID)
 		}
 		fmt.Println(dim(T.DryRunNothingDone))
@@ -234,7 +234,11 @@ func runOne(opts options, cfg *config, name string, distros []regDistro, wsl str
 		}
 	}
 
-	if removed := applyPrune(planPrune(listBackups(dir), dc.Keep, cfg.Verify)); removed > 0 {
+	if newerManifests(dir) {
+		// 這個資料夾裡有較新版本的 wslbak 寫的備份：不確定哪些還被需要，一份都不刪。
+		logf("%s: manifests from a newer wslbak are present; not pruning", name)
+		fmt.Println("  " + yellow(T.RunPruneSkipped))
+	} else if removed := applyPrune(planRetention(listBackups(dir), dc.retention(), cfg.Verify)); removed > 0 {
 		fmt.Printf("  "+T.RunPruned+"\n", removed)
 	}
 	if err := refreshRestoreKit(dc.Dest); err != nil {
