@@ -180,6 +180,13 @@ setsid nohup sh /root/churn.sh >/dev/null 2>&1 &
 # Give it a moment to detach: a shell that exits at once takes its background job with it.
 sleep 1
 ' >/dev/null
+# WSL stops a distro by itself once nothing has been running in it for a while, and a test
+# restore can take longer than that. A session is kept open here, so that a changed PID 1
+# can only mean that something stopped the distro.
+sh_in "$DISTRO" 'rm -f /tmp/e2e-hold-release' >/dev/null
+printf '%s\n%s\n' "$NIX_PATH_LINE" 'i=0; while [ ! -e /tmp/e2e-hold-release ] && [ $i -lt 1800 ]; do sleep 1; i=$((i + 1)); done' |
+	win "$WSL" -d "$DISTRO" -u root -e sh -s >/dev/null 2>&1 &
+sleep 1
 INSTANCE="$(instance_of "$DISTRO")"
 expect_true "files in the distro are being created and deleted" [ -n "$(sh_in "$DISTRO" 'pgrep -f churn.sh || ls /root/churn | head -n 1')" ]
 run run
@@ -191,6 +198,7 @@ FIRST="$(newest_backup)"
 expect_true "an archive and its manifest exist" [ -f "$DEST/$DISTRO/$FIRST.json" ]
 expect_true "no partial file is left" [ -z "$(find "$DEST/$DISTRO" -name '*.partial')" ]
 expect_true "the distro kept running through the backup (same PID 1)" [ -n "$INSTANCE" -a "$(instance_of "$DISTRO")" = "$INSTANCE" ]
+sh_in "$DISTRO" ': >/tmp/e2e-hold-release' >/dev/null
 expect_true "no temporary distro is left registered" [ "$(distro_names)" = "$BEFORE_DISTROS" ]
 expect_true "the folder for temporary distros is empty" [ -z "$(ls -A "$HOME_DIR/verify" 2>/dev/null)" ]
 run list
