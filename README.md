@@ -19,7 +19,8 @@ and shortens waits.
 
 Files inside WSL are not covered by OneDrive or most backup tools: they live in one virtual disk, and
 when that disk is damaged or Windows is reinstalled, everything in it is gone. The usual answer is a
-scheduled `wsl --export`, but `wsl --export` terminates the distro before it exports, so your shells,
+scheduled `wsl --export`, but `wsl --export` terminates the distro before it exports (it still does
+in WSL 2.7), so your shells,
 dev servers and containers die every time it runs. `wslbak` reads the distro from the inside instead,
 while it keeps running:
 
@@ -342,7 +343,8 @@ the last 20 hours.
 - **Single files can only be brought back into the distro**, not straight into a Windows folder. From
   Windows, open the result at `\\wsl.localhost\<distro>\<folder>`.
 - **Where it has been tested.** Developed on Ubuntu 26.04. The end-to-end suite passes against
-  Debian 12 and 13, Ubuntu 20.04, 22.04 and 24.04, Fedora 44, AlmaLinux 8 and 9, Rocky Linux 9,
+  Debian 12 and 13, Ubuntu 20.04, 22.04 and 24.04, Fedora 44, AlmaLinux 8 and 9, Rocky Linux 9 (the
+  build from CIQ that `wsl --install` offers),
   Oracle Linux 7, 8 and 9, Arch Linux, openSUSE Tumbleweed, Kali, Gentoo, NixOS and Alpine 3.24
   (GNU tar 1.26 to 1.35); with WSL 2.7 and 3.0; on Windows 11 (build 26300), Windows Server 2025
   (build 26100) and Windows Server 2022 (build 20348, the generation of Windows 10); and with
@@ -371,7 +373,7 @@ Start with `wslbak doctor`.
   Security or choose a folder that is not protected.
 - **`.exe` files stop working inside WSL ("Exec format error") after another distro stops.** This is
   not caused by wslbak: some distros clear a kernel setting that all your distros share when they
-  shut down. It has been seen with Fedora 44 and openSUSE Tumbleweed. It can show up after a backup
+  shut down. It has been seen with Fedora 44, openSUSE Tumbleweed and Rocky Linux 9. It can show up after a backup
   because a backup starts a stopped distro, which then stops again. `wsl --shutdown` fixes it, or, without restarting, from a Windows terminal:
   `wsl -u root sh -c "echo ':WSLInterop:M::MZ::/init:P' > /proc/sys/fs/binfmt_misc/register"`.
 - **"cannot run Windows programs" inside WSL.** Windows interop is disabled; check `[interop]` in

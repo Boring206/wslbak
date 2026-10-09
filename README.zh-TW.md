@@ -15,7 +15,7 @@
 
 WSL 裡的檔案不在 OneDrive 與大多數備份工具的範圍內。它們全都放在一個虛擬磁碟裡，磁碟損壞或重灌
 Windows 之後就什麼都不剩。常見的做法是排程執行 `wsl --export`，但 `wsl --export` 會先把 distro
-終止再匯出，每跑一次，你開著的 shell、開發伺服器與容器就全部被關掉。`wslbak` 改成從 distro 裡面讀，
+終止再匯出（WSL 2.7 仍然如此），每跑一次，你開著的 shell、開發伺服器與容器就全部被關掉。`wslbak` 改成從 distro 裡面讀，
 distro 照常執行：
 
 ```
@@ -293,7 +293,7 @@ wslbak 把真正的大小也寫進那個標頭（標頭的檢查碼跟著更正�
 - **單一檔案只能取回到 distro 裡**，不能直接放到 Windows 的資料夾。在 Windows 上可以從
   `\\wsl.localhost\<distro>\<資料夾>` 打開取回的結果。
 - **測過哪些環境。** 在 Ubuntu 26.04 上開發。端對端測試通過的有：Debian 12 與 13、Ubuntu 20.04／22.04／24.04、
-  Fedora 44、AlmaLinux 8 與 9、Rocky Linux 9、Oracle Linux 7／8／9、Arch Linux、openSUSE Tumbleweed、Kali、Gentoo、
+  Fedora 44、AlmaLinux 8 與 9、Rocky Linux 9（`wsl --install` 提供的 CIQ 版本）、Oracle Linux 7／8／9、Arch Linux、openSUSE Tumbleweed、Kali、Gentoo、
   NixOS、Alpine 3.24（GNU tar 1.26 到 1.35）；WSL 2.7 與 3.0；Windows 11（組建 26300）、Windows Server 2025（組建 26100）
   與 Windows Server 2022（組建 20348，和 Windows 10 同一代）；防毒是 Avast，以及開著即時保護的 Microsoft Defender。
   arm64 的執行檔在 arm64 Windows 上能啟動、單元測試通過，但那裡沒有 WSL 可以備份。
@@ -318,7 +318,7 @@ wslbak 把真正的大小也寫進那個標頭（標頭的檢查碼跟著更正�
   或換一個不受保護的資料夾。
 - **另一個 distro 停止之後，WSL 裡的 `.exe` 都無法執行（Exec format error）。**
   這不是 wslbak 造成的：有些 distro 關閉時，會清掉所有 distro 共用的一項核心設定。
-  實際看過的有 Fedora 44 與 openSUSE Tumbleweed。
+  實際看過的有 Fedora 44、openSUSE Tumbleweed 與 Rocky Linux 9。
   它可能出現在備份之後，因為備份會把沒在執行的 distro 啟動，之後它又自己停止。
   執行 `wsl --shutdown` 可以恢復；不想重啟的話，在 Windows 的終端機執行：
   `wsl -u root sh -c "echo ':WSLInterop:M::MZ::/init:P' > /proc/sys/fs/binfmt_misc/register"`。
