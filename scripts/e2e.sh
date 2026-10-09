@@ -702,8 +702,10 @@ else
 	WIN_PID="$(win "$SYS32/tasklist.exe" /FI "IMAGENAME eq $IMAGE" /FO CSV /NH </dev/null 2>/dev/null | tr -d '\r' | grep -i "^\"$IMAGE\"" | head -n 1 | cut -d, -f2 | tr -d '"')"
 	PARTIAL_BEFORE="$(find "$DEST/$DISTRO" -name '*.partial' -printf '%s' 2>/dev/null)"
 	if [ -n "$WIN_PID" ] && [ -n "$PARTIAL_BEFORE" ]; then
+		crumb "13i: freezing process $WIN_PID"
 		win "$PWD/bin/e2e-console.exe" -suspend "$WIN_PID" -seconds 40 </dev/null >/dev/null 2>&1
 		FROZEN=$?
+		crumb "13i: the freeze helper returned $FROZEN"
 		expect_true "the program was frozen for 40 seconds while the backup was being written" [ "$FROZEN" = 0 ]
 		# If the helper was stopped half-way, the test's own program would stay frozen and
 		# keep the lock: end it, so that the rest of the run says what happened.

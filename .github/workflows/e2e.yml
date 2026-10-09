@@ -16,11 +16,19 @@ on:
       distro:
         description: Distro to test against (a name from wsl --list --online, or alpine)
         default: Debian
+      only:
+        description: Which of the jobs to run
+        type: choice
+        options: [all, defender]
+        default: all
   schedule:
     - cron: '17 4 * * 1'
 
+# statuses: the tests post the name of each section as a commit status while they run. A
+# runner that hangs loses its log, and this is then the only trace of where it stopped.
 permissions:
   contents: read
+  statuses: write
 
 jobs:
   e2e:
@@ -31,13 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-2025
-            defender: 'off'
-          - os: windows-2022
-            defender: 'off'
-          - os: windows-2025
-            defender: 'on'
+        include: ${{ fromJSON(inputs.only == 'defender' && '[{"os":"windows-2025","defender":"on"}]' || '[{"os":"windows-2025","defender":"off"},{"os":"windows-2022","defender":"off"},{"os":"windows-2025","defender":"on"}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -93,11 +95,17 @@ jobs:
           distribution: Debian-13
           wsl-version: 2
           additional-packages: nodejs npm curl python3 xz-utils
+      # The suite takes 15 to 25 minutes. The limit keeps a run that hangs from using up the
+      # whole job, and leaves time for the steps after it.
       - name: Run the end-to-end tests
         shell: wsl-bash {0}
+        timeout-minutes: 45
         env:
           E2E_DISTRO: ${{ inputs.distro || 'Debian' }}
-          WSLENV: E2E_DISTRO
+          E2E_CRUMB_URL: ${{ github.api_url }}/repos/${{ github.repository }}/statuses/${{ github.sha }}
+          E2E_CRUMB_TOKEN: ${{ github.token }}
+          E2E_CRUMB_CONTEXT: e2e progress (${{ matrix.os }}, Defender ${{ matrix.defender }})
+          WSLENV: E2E_DISTRO:E2E_CRUMB_URL:E2E_CRUMB_TOKEN:E2E_CRUMB_CONTEXT
         run: |
           node --version
           # The upgrade test builds an older version with the Go that was set up on Windows.
