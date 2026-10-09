@@ -5,6 +5,10 @@
 Scheduled backups of a WSL distro that do not stop it, a test restore after every backup, a
 notification when something fails, and a one-line restore.
 
+> **Status: 0.1.0, the first public release.** An automated suite has made real backups, test
+> restores and restores on 18 distros and three builds of Windows, but nobody has used wslbak day
+> to day yet. Keep the backups you already have until it has proven itself on your PC.
+
 ![A one-minute tour: setting up, backing up, looking inside a backup, bringing back one file, restoring a whole distro](docs/demo.en.gif)
 
 The same tour as a [video](docs/demo.en.mp4). It is a recording of the commands as they ran, on a
