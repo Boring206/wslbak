@@ -28,7 +28,20 @@ main() {
 		printf '%s' "$used"
 	})
 	say "used-kb	$used"
-	say "os	$(. /etc/os-release 2>/dev/null && printf '%s' "$PRETTY_NAME")"
+	# 只取 PRETTY_NAME 那一行；不把整個檔案當成腳本執行。
+	os=
+	if [ -r /etc/os-release ]; then
+		while IFS= read -r line; do
+			case "$line" in
+			PRETTY_NAME=*)
+				os=${line#PRETTY_NAME=}
+				os=${os#[\"\']}
+				os=${os%[\"\']}
+				;;
+			esac
+		done </etc/os-release
+	fi
+	say "os	$os"
 	if command -v sha256sum >/dev/null 2>&1; then
 		say "sha256sum	yes"
 	else

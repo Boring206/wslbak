@@ -324,7 +324,9 @@ func parseArgs(args []string) (options, error) {
 }
 
 func main() {
-	os.Exit(run(os.Args[1:]))
+	code := run(os.Args[1:])
+	debugPeakMemory()
+	os.Exit(code)
 }
 
 func run(args []string) int {

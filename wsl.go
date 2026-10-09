@@ -290,17 +290,45 @@ func importDistro(ctx context.Context, name, dir, source string, stdin io.Reader
 	cmd.Stdin = stdin
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
 	cmd.WaitDelay = waitDelay
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Run(); err != nil {
+	out := &cappedBuffer{limit: 64 << 10}
+	cmd.Stdout = out
+	cmd.Stderr = out
+	err := cmd.Run()
+	text := strings.TrimSpace(decodeWSLText(out.buf.Bytes()))
+	if err != nil {
 		if ctx.Err() != nil {
 			err = ctx.Err()
 		}
-		return &wslError{Op: "--import", Err: err, Output: strings.TrimSpace(decodeWSLText(out.Bytes()))}
+		return &wslError{Op: "--import", Err: err, Output: text}
 	}
-	logf("wsl --import %s: %s", name, strings.TrimSpace(decodeWSLText(out.Bytes())))
+	logf("wsl --import %s: %s (%d more bytes of output not kept)", name, firstLine(text), out.dropped)
+	if importComplained(text) {
+		// 匯入端的 tar 讀不懂封存的某一段時只會跳過去，wsl.exe 仍然回報成功；那樣還原出來的東西是不完整的。
+		return &wslError{Op: "--import", Err: errImportDamaged, Output: firstLine(text)}
+	}
 	return nil
+}
+
+var errImportDamaged = errors.New("the importer could not read part of the archive")
+
+// importComplained 判斷匯入端的 tar 有沒有抱怨封存壞掉。這句話是 bsdtar 自己的，不會被翻譯。
+func importComplained(output string) bool {
+	return strings.Contains(output, "Damaged tar archive")
+}
+
+// cappedBuffer 只留下輸出的前面一段，其餘只計數。wsl --import 平常只印一行，
+// 但匯入端的 tar 遇到讀不懂的封存會把同一句話重複幾千萬次，全部留著要吃掉好幾 GB 的記憶體。
+type cappedBuffer struct {
+	buf     bytes.Buffer
+	limit   int
+	dropped int64
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	keep := min(len(p), max(c.limit-c.buf.Len(), 0))
+	c.buf.Write(p[:keep])
+	c.dropped += int64(len(p) - keep)
+	return len(p), nil
 }
 
 func importFromReader(ctx context.Context, name, dir string, r io.Reader) error {
@@ -394,7 +422,7 @@ func parseProbe(text string) (probeInfo, error) {
 		p.UsedBytes = kb * 1024
 	}
 	if f, ok := protoValue(rows, "os"); ok && len(f) > 0 {
-		p.OS = f[0]
+		p.OS = plain(f[0])
 	}
 	if f, ok := protoValue(rows, "sha256sum"); ok && len(f) > 0 {
 		p.HasSHA256 = f[0] == "yes"

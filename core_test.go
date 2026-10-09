@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,6 +18,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf16"
+
+	"golang.org/x/sys/windows"
 )
 
 func utf16le(s string) []byte {
@@ -207,7 +211,7 @@ func TestParseAndJudgeCheck(t *testing.T) {
 	sum := sha256.Sum256([]byte(inertWSLConf))
 	good := "@wslbak\tpid1\tinit(wslbak-ver\n@wslbak\tsystemd\tno\n@wslbak\twindows-drives\t0\n@wslbak\tinterop\tno\n" +
 		"@wslbak\twslconf\t" + hex.EncodeToString(sum[:]) + "\n@wslbak\tuser\tok\tuser\t/home/user\n@wslbak\tsamples\t3\t0\n@wslbak\tdone\n"
-	if reason, detail := judgeCheck(parseCheck(good), 3); reason != "" {
+	if reason, detail := judgeCheck(parseCheck(good), 3, 0); reason != "" {
 		t.Errorf("a clean report was rejected: %s (%s)", reason, detail)
 	}
 	swap := func(old, new string) checkReport { return parseCheck(strings.Replace(good, old, new, 1)) }
@@ -230,7 +234,7 @@ func TestParseAndJudgeCheck(t *testing.T) {
 		{"empty output", parseCheck(""), reasonCheck},
 	}
 	for _, c := range cases {
-		if got, _ := judgeCheck(c.report, 3); got != c.want {
+		if got, _ := judgeCheck(c.report, 3, 0); got != c.want {
 			t.Errorf("%s: reason = %q, want %q", c.label, got, c.want)
 		}
 	}
@@ -1202,5 +1206,130 @@ func TestRestoreReadme(t *testing.T) {
 				t.Errorf("the restore instructions lack %q", want)
 			}
 		}
+	}
+}
+
+// 測試用的故障只在沙箱（--home）裡生效，而且恰好在指定的位元組數之後回報磁碟已滿。
+func TestTestFaults(t *testing.T) {
+	t.Setenv(envTestDiskFullAfter, "5")
+	t.Setenv(envTestToast, "1")
+	defer func(old string) { homeOverride = old }(homeOverride)
+
+	homeOverride = ""
+	var plain bytes.Buffer
+	if w := withTestFaults(&plain); w != io.Writer(&plain) {
+		t.Errorf("without --home the writer must be returned unchanged")
+	}
+	if !toastAllowed() {
+		t.Errorf("without --home notifications are always allowed")
+	}
+
+	homeOverride = `C:\sandbox`
+	var out bytes.Buffer
+	w := withTestFaults(&out)
+	if n, err := w.Write([]byte("abc")); n != 3 || err != nil {
+		t.Fatalf("first write: %d, %v", n, err)
+	}
+	n, err := w.Write([]byte("defgh"))
+	if n != 2 || !errors.Is(err, windows.ERROR_DISK_FULL) {
+		t.Errorf("second write: %d, %v; want 2 bytes and a full disk", n, err)
+	}
+	if out.String() != "abcde" {
+		t.Errorf("wrote %q, want %q", out.String(), "abcde")
+	}
+	if n, err := w.Write([]byte("x")); n != 0 || !errors.Is(err, windows.ERROR_DISK_FULL) {
+		t.Errorf("later writes must keep failing: %d, %v", n, err)
+	}
+	if !toastAllowed() {
+		t.Errorf("the sandbox must allow notifications when asked to")
+	}
+	t.Setenv(envTestToast, "")
+	if toastAllowed() {
+		t.Errorf("the sandbox must not raise notifications by default")
+	}
+	t.Setenv(envTestDiskFullAfter, "nonsense")
+	if w := withTestFaults(&plain); w != io.Writer(&plain) {
+		t.Errorf("a value that is not a number must be ignored")
+	}
+}
+
+// 來自 distro 的文字在顯示之前，控制字元要換成看得見的寫法。
+func TestPlain(t *testing.T) {
+	for in, want := range map[string]string{
+		"notes.md":         "notes.md",
+		"中文檔名 with space":  "中文檔名 with space",
+		"a\tb":             "a\tb",
+		"evil\x1b[2Jname":  `evil\x1b[2Jname`,
+		"two\nlines":       `two\x0alines`,
+		"bell\x07":         `bell\x07`,
+		"c1\u009bcsi":      `c1\x9bcsi`,
+		"rtl\u202egnp.exe": `rtl\u202egnp.exe`,
+		"del\x7f":          `del\x7f`,
+	} {
+		if got := plain(in); got != want {
+			t.Errorf("plain(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// 備份資料夾的權限：其他帳號讀得到時要提醒。
+func TestOthersCanRead(t *testing.T) {
+	for sddl, want := range map[string]bool{
+		// 資料磁碟的預設：已驗證的使用者可以修改。
+		"O:BAG:S-1-5-21-1-2-3-513D:AI(A;OICIID;FA;;;BA)(A;OICIID;FA;;;SY)(A;OICIID;0x1301bf;;;AU)(A;OICIID;0x1200a9;;;BU)": true,
+		// 使用者自己的設定檔資料夾底下。
+		"O:S-1-5-21-1-2-3-1001G:S-1-5-21-1-2-3-513D:AI(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;S-1-5-21-1-2-3-1001)": false,
+		"D:(A;;FR;;;WD)":                         true,
+		"D:(A;OICI;FA;;;S-1-5-11)":               true,
+		"D:(D;;FA;;;WD)(A;;FA;;;BA)":             false,
+		"D:PAI(A;OICI;FA;;;BA)S:(AU;SA;FA;;;WD)": false,
+		"D:NO_ACCESS_CONTROL":                    true,
+		"O:BAG:BA":                               false,
+		"":                                       false,
+	} {
+		if got := othersCanRead(sddl); got != want {
+			t.Errorf("othersCanRead(%q) = %v, want %v", sddl, got, want)
+		}
+	}
+}
+
+// 最大的幾個檔案：試還原要確認它們的大小，少一個或短了都算沒過。
+func TestLargestFiles(t *testing.T) {
+	var idx tarIndex
+	for i, size := range []int64{5, 90, 30, 70, 10, 80, 20, 60, 50, 40, 100} {
+		idx.noteLargest(fmt.Sprintf("./f%d", i), size)
+	}
+	var got []int64
+	for _, f := range idx.Largest {
+		got = append(got, f.Size)
+	}
+	if want := []int64{100, 90, 80, 70, 60, 50, 40, 30}; !slices.Equal(got, want) {
+		t.Errorf("largest = %v, want %v", got, want)
+	}
+
+	base := "@wslbak\tpid1\tinit\n@wslbak\tsystemd\tno\n@wslbak\twindows-drives\t0\n@wslbak\tinterop\tno\n" +
+		"@wslbak\twslconf\t" + func() string { s := sha256.Sum256([]byte(inertWSLConf)); return hex.EncodeToString(s[:]) }() + "\n" +
+		"@wslbak\tsamples\t3\t0\n"
+	if reason, detail := judgeCheck(parseCheck(base+"@wslbak\tsizes\t2\t0\n@wslbak\tdone\n"), 3, 2); reason != "" {
+		t.Errorf("all sizes right: %s (%s)", reason, detail)
+	}
+	reason, detail := judgeCheck(parseCheck(base+"@wslbak\tsize-bad\t./big.bin\texpected 9663676416, found 0\n@wslbak\tsizes\t1\t1\n@wslbak\tdone\n"), 3, 2)
+	if reason != reasonSamples || !strings.Contains(detail, "./big.bin") {
+		t.Errorf("a file that came back empty: reason=%q detail=%q", reason, detail)
+	}
+	if reason, _ := judgeCheck(parseCheck(base+"@wslbak\tdone\n"), 3, 2); reason != reasonSamples {
+		t.Errorf("sizes that were never checked must not pass: %q", reason)
+	}
+
+	// 匯入端抱怨封存壞掉時，就算 wsl.exe 回報成功也不算數；它的輸出只留前面一段。
+	if !importComplained("bsdtar: Damaged tar archive\nbsdtar: Retrying...") || importComplained("The operation completed successfully.") {
+		t.Errorf("importComplained is wrong")
+	}
+	out := &cappedBuffer{limit: 10}
+	out.Write([]byte("0123456"))
+	out.Write([]byte("789abcdef"))
+	out.Write([]byte("more"))
+	if out.buf.String() != "0123456789" || out.dropped != 10 {
+		t.Errorf("capped buffer kept %q and dropped %d", out.buf.String(), out.dropped)
 	}
 }

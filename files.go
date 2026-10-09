@@ -89,7 +89,7 @@ func fileRow(e indexEntry, name string) []string {
 	case typeDir:
 		name += "/"
 	}
-	return []string{modeString(e), fmt.Sprintf("%d:%d", e.UID, e.GID), size, time.Unix(e.MTime, 0).Format("2006-01-02 15:04"), name}
+	return []string{modeString(e), fmt.Sprintf("%d:%d", e.UID, e.GID), size, time.Unix(e.MTime, 0).Format("2006-01-02 15:04"), plain(name)}
 }
 
 func cmdFiles(opts options) int {

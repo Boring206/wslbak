@@ -176,8 +176,10 @@ wslbak config --at 02:30
 ## 試還原
 
 備份寫好之後，wslbak 會用 `wsl --import` 把它匯入成一個暫時的 distro，在裡面執行檢查，再把它取消註冊。
-檢查的內容是：預設使用者與家目錄都在，而且備份讀取過程中隨機挑出的 512 個檔案，SHA-256 和當時一樣。
+檢查的內容是：預設使用者與家目錄都在；備份讀取過程中隨機挑出的 512 個檔案，SHA-256 和當時一樣；
+最大的八個檔案大小和當時一樣（它們太大，不適合每次都算雜湊，卻是匯入時最容易出錯的）。
 在這之前，整個備份檔會先被重新讀過一遍，和寫入時記下的 SHA-256 比對。
+匯入程式如果抱怨封存有一段讀不懂，就算 WSL 回報成功，試還原也算沒過。
 
 這個暫時的 distro 不可以「活起來」：所有 WSL2 distro 共用同一個網路命名空間，一份忠實的複本一開機，
 就會多跑一套你的服務與排程工作，還帶著你的憑證。所以 wslbak 在送去匯入的資料流結尾接上自己的
@@ -208,6 +210,9 @@ wslbak config --at 02:30
 - `restore` 會拒絕已經有人用的名稱，以及不是空的資料夾，還原 distro 與取回檔案都一樣。
 - 在你的 distro 裡執行的腳本不會刪除任何東西，也只用到 shell 與 coreutils。
   你替 `--path`、`--into`、`--exclude` 輸入的內容，不會出現在 distro 裡的任何命令列上。
+- 來自 distro 裡的檔名與訊息，顯示時會把控制字元換成看得見的寫法，
+  所以名稱動過手腳的檔案沒辦法對你的終端機下指令。
+- 單一檔案只會放回備份資料夾所屬的那個 distro，不管資料夾裡的紀錄怎麼寫。
 - 由其他程式管理的 distro（`docker-desktop*`、`rancher-desktop*`、`podman-machine-*`）與 WSL1 distro
   會被拒絕並說明原因。
 - 同一時間只有一個 wslbak 在運作；第二個會以結束碼 3 結束。
@@ -218,6 +223,10 @@ wslbak config --at 02:30
 （加上 `--one-file-system`），把原始的封存寫到 stdout。Windows 這一端的 wslbak 用平行 gzip 壓縮、
 計算雜湊，寫成 `<編號>.tar.gz.partial`；只有 tar 回報成功、而且收到的位元組數等於 tar 自己說它寫出的數量時，
 才會改名成正式的檔案。
+
+tar 的輸出在途中會被補上一個欄位。8 GiB 以上的檔案，GNU tar 只把大小記在延伸標頭裡，檔案自己的標頭上留的是 0。
+WSL 2.7 內附的匯入程式（bsdtar 3.7.7）會相信那個 0：這種檔案還原出來是空的，而 `wsl --import` 照樣回報成功。
+wslbak 把真正的大小也寫進那個標頭，備份在那裡也能正確還原。其他內容完全不動，備份仍然是合法的 tar。
 
 排程工作屬於你的 Windows 帳號，在你的登入工作階段裡執行。它啟動的是放在
 `%LOCALAPPDATA%\Programs\wslbak` 的無視窗版程式，所以不依賴 Node，也不依賴 distro 裡的任何東西。
@@ -231,6 +240,10 @@ wslbak config --at 02:30
 - **還原整個 distro 時，POSIX ACL 不會被還原。** ACL 有存進備份檔，但 `wsl --import` 不會套用。
   `wslbak run` 會告訴你有幾個檔案受影響（systemd 的日誌資料夾每次開機都會重設，不計入）。
   用 `--path` 取回單一檔案時，ACL 會保留。
+- **備份沒有加密。** 備份裡是 distro 的全部檔案，私鑰與密碼雜湊都在內。讀得到備份資料夾的人就讀得到這一切；
+  寫得進去的人可以改動備份，或換掉放在那裡的那份程式。和別人共用的電腦或 NAS 上，請把資料夾設成只有你的帳號能存取；
+  這台電腦上有其他帳號讀得到時，`wslbak doctor` 會告訴你。只對別人寫不進去的資料夾裡的備份做驗證與還原：
+  試還原會執行備份裡帶出來的程式。
 - **每次都是完整備份。** 目前沒有增量模式。
 - **distro 裡要有 GNU tar。** 只有 BusyBox tar 的（剛裝好的 Alpine）或沒有 tar 的（剛裝好的
   openSUSE Tumbleweed）會被拒絕，並附上安裝它的指令。
@@ -238,7 +251,8 @@ wslbak config --at 02:30
 - **試還原需要可用空間**，位置是 `%LOCALAPPDATA%` 所在的磁碟，最多約等於 distro 裡檔案的總大小。
   空間不夠時，備份會保留並回報為「沒有驗證」，結束碼是 1。
 - **排程只在你登入時執行。** distro 當時沒有在執行的話，會為了備份而被啟動。
-- **試還原是抽查。** 它證明備份檔匯入得進去、512 個檔案完好，不是證明每個檔案的每個位元組都完好。
+- **試還原是抽查。** 它證明備份檔匯入得進去、512 個檔案完好、最大的幾個檔案大小正確，
+  不是證明每個檔案的每個位元組都完好。
 - **單一檔案只能取回到 distro 裡**，不能直接放到 Windows 的資料夾。在 Windows 上可以從
   `\\wsl.localhost\<distro>\<資料夾>` 打開取回的結果。
 - 在 Ubuntu 26.04 上開發；端對端測試是在 Windows 11 x64、WSL 2.7 上，對 Debian 13、Fedora 44、
@@ -268,6 +282,9 @@ wslbak config --at 02:30
   `wsl -u root sh -c "echo ':WSLInterop:M::MZ::/init:P' > /proc/sys/fs/binfmt_misc/register"`。
 - **在 WSL 裡出現「無法執行 Windows 程式」。** Windows 互通被停用了；檢查 `/etc/wsl.conf` 的
   `[interop]` 區段，或改從 Windows 使用 wslbak。
+- **在 Git Bash 裡，`--path`、`--into` 與 `files <路徑>` 會失敗或找不到東西。** Git Bash 會把看起來像
+  Linux 路徑的參數改寫掉（`/home/me` 變成 `C:/Program Files/Git/home/me`），wslbak 收到的已經是改過的。
+  在指令前面加上 `MSYS_NO_PATHCONV=1`，或改用 PowerShell、cmd 或 WSL 的 shell。
 
 ## 開發
 
@@ -280,10 +297,16 @@ npm run e2e      # 端對端測試：在 WSL 裡對一個拋棄式的 distro 與
 npm run dist     # 在 dist/ 產生發佈用的 zip、檢查碼，以及 winget 與 scoop 的套件清單
 ```
 
-`npm run e2e` 第一次執行時會建立名為 `wslbak-e2e-<亂數>` 的 Debian distro，並留到下次再用；
-`scripts/e2e-distro.sh destroy` 可以把它移除。設定 `E2E_DISTRO` 可以測試別的家族
-（`FedoraLinux-44`、`archlinux`、`openSUSE-Tumbleweed`、`alpine`）。測試不會碰其他的 distro，
-也不會碰你真正的 wslbak 設定。在 WSL 裡開發而那裡沒有安裝 Go 時，建置腳本會退回使用 Windows 上的
+`npm run e2e` 第一次執行時會建立名為 `wslbak-e2e-<亂數>` 的 Debian distro；設定 `KEEP_E2E_DISTRO=1`
+可以把它留到下次再用，`scripts/e2e-distro.sh destroy` 則把它移除。設定 `E2E_DISTRO` 可以測試別的家族
+（`FedoraLinux-44`、`archlinux`、`openSUSE-Tumbleweed`、`alpine`…），`E2E_ROOTFS_URL` 則匯入
+`wsl --install` 沒有提供的根檔案系統。`E2E_FAST=1` 略過只和 Windows 有關的部分，`E2E_TOAST=1`
+加入一項會真的跳出通知的檢查。另外有兩支比較慢、要手動執行的腳本：`scripts/e2e-scale.sh`
+（數百萬個檔案、超過 8 GiB 的單一檔案）與 `scripts/e2e-services.sh`（忙碌中的 Docker Engine 與資料庫）。
+測試不會碰其他的 distro，也不會碰你真正的 wslbak 設定。
+
+有幾種狀況是靠開關做出來的，這些開關只有和沙箱選項 `--home` 一起用才有作用：
+`testhooks.go` 裡那些 `WSLBAK_TEST_…` 環境變數。正常使用時它們不做任何事。在 WSL 裡開發而那裡沒有安裝 Go 時，建置腳本會退回使用 Windows 上的
 `go.exe`；要指定別的位置，設定環境變數 `GO`。
 
 所有介面文字都在 `i18n.go`，每種語言各一份。改動訊息時兩份都要改，測試會檢查有沒有漏掉。

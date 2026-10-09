@@ -141,8 +141,7 @@ func sendWebhook(raw, title, body string) error {
 // notify 把結果告訴使用者：Windows 通知，以及有設定的話再送一份到 webhook。
 // 通知發不出去不影響備份本身的結果，只記在紀錄檔裡。
 func notify(cfg *config, title, body string) {
-	// 測試用的沙箱不跳通知。
-	if cfg.Notify.Toast && homeOverride == "" {
+	if cfg.Notify.Toast && toastAllowed() {
 		if err := toast(title, body); err != nil {
 			logf("toast: %v", err)
 		}

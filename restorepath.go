@@ -181,6 +181,10 @@ func cmdRestorePath(opts options) int {
 			}
 		}
 	}
+	// 檔案只放回這份備份所屬的 distro。備份資料夾裡的紀錄寫著別的名字時，寧可不做。
+	if !strings.EqualFold(m.Distro, source.Distro) {
+		return fail(fmt.Errorf(T.PathWrongDistro, m.ID, m.Distro, source.Distro))
+	}
 	if err := ensureIndex(m); err != nil {
 		return fail(fmt.Errorf(T.FilesNoIndex, m.ID, err))
 	}

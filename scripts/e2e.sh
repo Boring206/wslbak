@@ -10,6 +10,13 @@
 # To test against another distro family, set E2E_DISTRO to a name from
 # `wsl --list --online` (FedoraLinux-44, archlinux, openSUSE-Tumbleweed, …) or to alpine:
 #   E2E_DISTRO=FedoraLinux-44 npm run e2e
+#
+# E2E_FAST=1 leaves out the parts that only exercise Windows and do not depend on the distro
+# (waiting for the scheduled time, other kinds of destination, upgrading, installing the
+# npm package, the console window); use it when going through several distro families.
+# E2E_TOAST=1 adds a check that a Windows notification really arrives. It shows one
+# notification on screen and, for the duration of the check, registers wslbak as a sender
+# of notifications for the current user.
 set -u
 
 cd "$(dirname "$0")/.."
@@ -19,9 +26,6 @@ cd "$(dirname "$0")/.."
 [ -n "${WSL_DISTRO_NAME:-}" ] || { echo "Run this inside WSL."; exit 2; }
 [ -f bin/wslbak-x64.exe ] || [ -f bin/wslbak-arm64.exe ] || { echo "The executables are missing; run npm run build first."; exit 2; }
 
-pass=0
-fail=0
-skipped=0
 RUN_ID="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
 SANDBOX_WIN="$(sandbox_win)\\run-$RUN_ID"
 SANDBOX="$(wslpath -u "$SANDBOX_WIN")"
@@ -29,62 +33,17 @@ HOME_DIR="$SANDBOX/home"
 DEST="$SANDBOX/dest"
 # Distros the tests create besides the long-lived test distro: "name|Windows folder".
 extra_distros=()
+# shellcheck source=scripts/e2e-lib.sh
+. scripts/e2e-lib.sh
+VERSION="$(node -p 'require("./package.json").version')"
+fast() { [ -n "${E2E_FAST:-}" ]; }
 
-# Assertions below match the English output, whatever the system language is.
-WB=(node bin/wslbak.js --lang en --home "$HOME_DIR")
-
-section() { printf '\n\033[1m%s\033[0m\n' "$1"; }
-ok() {
-	pass=$((pass + 1))
-	printf '  \033[32mpass\033[0m %s\n' "$1"
-}
-bad() {
-	fail=$((fail + 1))
-	printf '  \033[31mFAIL\033[0m %s\n' "$1"
-	[ -n "${2:-}" ] && printf '%s\n' "$2" | sed 's/^/        | /'
-}
-skip() {
-	skipped=$((skipped + 1))
-	printf '  \033[33mskip\033[0m %s\n' "$1"
-}
-
-# run: run wslbak with stdin at /dev/null; output goes to OUT, exit code to RC.
-run() {
-	ensure_interop
-	OUT="$(timeout 600 "${WB[@]}" "$@" 2>&1 </dev/null | tr -d '\r'; exit "${PIPESTATUS[0]}")"
-	RC=$?
-}
-# run_kit: the same for the copy of the program that sits in the backup folder.
+# run_kit: like run, for the copy of the program that sits in the backup folder.
 run_kit() {
 	ensure_interop
 	OUT="$(timeout 600 "$DEST/wslbak.exe" --lang en --home "$(wslpath -w "$SANDBOX/empty-home")" "$@" 2>&1 </dev/null | tr -d '\r'; exit "${PIPESTATUS[0]}")"
 	RC=$?
 }
-expect_rc() {
-	if [ "$RC" = "$1" ]; then ok "$2"; else bad "$2 (exit code $RC, expected $1)" "$OUT"; fi
-}
-expect_has() {
-	if grep -qF -- "$1" <<<"$OUT"; then ok "$2"; else bad "$2 (output lacks \"$1\")" "$OUT"; fi
-}
-expect_lacks() {
-	if grep -qF -- "$1" <<<"$OUT"; then bad "$2 (output contains \"$1\")" "$OUT"; else ok "$2"; fi
-}
-expect_true() {
-	local label="$1"
-	shift
-	if "$@"; then ok "$label"; else bad "$label"; fi
-}
-
-# wsl.exe prints its own warnings (lines starting with "wsl: ") next to the command's
-# output; they are not part of what the command said.
-no_wsl_notes() { tr -d '\r' | grep -v '^wsl: ' || true; }
-# in_distro <distro> <script file>: run a script as root inside a distro.
-in_distro() { win "$WSL" -d "$1" -u root -e sh -s <"$2" 2>&1 | no_wsl_notes; }
-# sh_in <distro> <commands>: run shell commands as root inside a distro. They travel on
-# stdin, so nothing has to survive wsl.exe's handling of quotes.
-sh_in() { printf '%s\n' "$2" | win "$WSL" -d "$1" -u root -e sh -s 2>&1 | no_wsl_notes; }
-distro_names() { wsl_exe -l -q </dev/null | tr -d '\r' | sed '/^$/d' | sort; }
-registered() { [ -n "$(registered_path "$1")" ]; }
 task_name() {
 	local sid
 	sid="$(win "$SYS32/whoami.exe" /user /fo csv /nh </dev/null | tr -d '\r' | sed 's/.*,"\(S-[0-9-]*\)".*/\1/')"
@@ -104,11 +63,14 @@ snapshot() {
 }
 
 cleanup() {
+	[ -n "${HOOK_PID:-}" ] && kill "$HOOK_PID" 2>/dev/null
+	[ -n "${TOAST_KEY_ADDED:-}" ] && win "$REG" delete "$TOAST_KEY" /f </dev/null >/dev/null 2>&1
 	# Let wslbak remove its own task and temporary distros first.
 	if [ -d "$HOME_DIR" ]; then
 		timeout 120 "${WB[@]}" uninstall --yes </dev/null >/dev/null 2>&1
 	fi
 	task_exists && win "$SYS32/schtasks.exe" /Delete /TN "$(task_name)" /F </dev/null >/dev/null 2>&1
+	[ -n "${SUBST_LETTER:-}" ] && win "$SYS32/subst.exe" "$SUBST_LETTER:" /D </dev/null >/dev/null 2>&1
 	local entry
 	for entry in "${extra_distros[@]:-}"; do
 		[ -n "$entry" ] && unregister_guarded "${entry%%|*}" "${entry#*|}" 2>/dev/null
@@ -153,6 +115,16 @@ if ! sh_in "$DISTRO" 'tar --version 2>/dev/null' | grep -q 'GNU tar'; then
 fi
 SEEDED="$(in_distro "$DISTRO" scripts/e2e-seed.sh | tail -n 1)"
 if [ "$SEEDED" = seeded ]; then ok "planted the test files"; else bad "planting the test files" "$SEEDED"; fi
+# People log in to their distro as an ordinary user, not as root; a freshly installed test
+# distro has no such user yet.
+DEFAULT_USER=root
+wsl_exe --manage "$DISTRO" --set-default-user tester </dev/null >/dev/null 2>&1
+if [ "$(as_default "$DISTRO" 'id -un')" = tester ]; then
+	DEFAULT_USER=tester
+	ok "the test distro logs in as an ordinary user"
+else
+	skip "could not make an ordinary user the default (wsl --manage --set-default-user)"
+fi
 BEFORE_DISTROS="$(distro_names)"
 
 section "1. Nothing is set up yet"
@@ -205,8 +177,11 @@ while [ $i -lt 6000 ]; do
 done
 CHURN
 setsid nohup sh /root/churn.sh >/dev/null 2>&1 &
+# Give it a moment to detach: a shell that exits at once takes its background job with it.
+sleep 1
 ' >/dev/null
 INSTANCE="$(instance_of "$DISTRO")"
+expect_true "files in the distro are being created and deleted" [ -n "$(sh_in "$DISTRO" 'pgrep -f churn.sh || ls /root/churn | head -n 1')" ]
 run run
 expect_rc 0 "run succeeds while files are changing"
 expect_has "wrote " "it reports the archive"
@@ -250,6 +225,11 @@ expect_has "1234:5678" "a single file shows its owner"
 run files --find "with space"
 expect_rc 0 "files --find finds a name with a space and Chinese characters"
 expect_has "/wslbak-fixture/中文檔名 with space.txt" "and prints its full path"
+# Any user inside the distro can give a file a name with control characters in it; a
+# console would act on them.
+run files /wslbak-fixture
+expect_true "a control character in a file name never reaches the screen as it is" [ "$(printf '%s' "$OUT" | tr -cd '\033' | wc -c)" = 0 ]
+expect_has 'esc\x1b[31mred' "it is shown in a harmless, visible form instead"
 run files /no/such/folder
 expect_rc 1 "files exits 1 for a path that is not in the backup"
 run files --find no-such-name-anywhere
@@ -272,7 +252,7 @@ expect_has "Brought back" "and reports it"
 FIXTURE_SIG='
 LC_ALL=C; export LC_ALL
 cd "$1" || exit 1
-stat -c "%n|%F|%s|%h|%u:%g|%a|%y" plain.txt sparse.bin cap-binary acl-file hard1 hard2 symlink fifo devnull "中文檔名 with space.txt"
+stat -c "%n|%F|%s|%h|%u:%g|%a|%y" plain.txt sparse.bin cap-binary setuid-binary acl-file hard1 hard2 symlink fifo devnull "中文檔名 with space.txt"
 [ "$(stat -c %b sparse.bin)" -lt 100000 ] && echo sparse
 [ "$(stat -c %i hard1)" = "$(stat -c %i hard2)" ] && echo linked
 getcap cap-binary 2>/dev/null | sed "s|.* ||"
@@ -304,6 +284,13 @@ expect_rc 2 "restore --path refuses a path that is not in the backup"
 expect_true "and creates nothing for it" [ -z "$(sh_in "$DISTRO" "ls -d $BACK-none 2>/dev/null")" ]
 run restore --path / --into "$BACK-root" --yes
 expect_rc 2 "restore --path refuses the whole root"
+# A record in the backup folder that names another distro must not send the files there.
+cp "$DEST/$DISTRO/$FIRST.json" "$SANDBOX/record.keep"
+sed -i 's/"distro": "[^"]*"/"distro": "some-other-distro"/' "$DEST/$DISTRO/$FIRST.json"
+run restore "$FIRST" --path /wslbak-fixture/plain.txt --into "$BACK-wrong" --yes
+expect_rc 2 "restore --path refuses a backup whose record names another distro"
+expect_has "belongs to some-other-distro" "and says why"
+cp "$SANDBOX/record.keep" "$DEST/$DISTRO/$FIRST.json"
 run restore --path /etc/hostname --into relative/folder --yes
 expect_rc 2 "restore --path refuses a target that is not an absolute path"
 run restore --path /etc/hostname --yes
@@ -431,7 +418,21 @@ expect_has "Restored as the distro $RESTORED" "it reports the new distro"
 expect_true "the new distro is registered" registered "$RESTORED"
 expect_true "the original is still registered" registered "$DISTRO"
 if registered "$RESTORED"; then
-	expect_true "the restored files match" [ "$(in_distro "$RESTORED" scripts/e2e-compare.sh | head -n 12)" = "$(in_distro "$DISTRO" scripts/e2e-compare.sh | head -n 12)" ]
+	expect_true "the restored files match" [ "$(in_distro "$RESTORED" scripts/e2e-compare.sh | head -n 13)" = "$(in_distro "$DISTRO" scripts/e2e-compare.sh | head -n 13)" ]
+	# Identical files are not the whole story: can the restored distro be used?
+	if [ "$DEFAULT_USER" = tester ]; then
+		expect_true "the restored distro logs in as the same ordinary user" [ "$(as_default "$RESTORED" 'id -un')" = tester ]
+		expect_true "the user's private key kept its owner and mode" [ "$(as_default "$RESTORED" 'stat -c "%U %a" "$HOME/.ssh" "$HOME/.ssh/id_test" | tr "\n" " "; cat "$HOME/.ssh/id_test"')" = "tester 700 tester 600 not a real key" ]
+	fi
+	expect_true "a setuid program is still setuid root" [ "$(sh_in "$RESTORED" 'stat -c "%u %a" /wslbak-fixture/setuid-binary')" = "0 4755" ]
+	if [ "$(sh_in "$DISTRO" 'cat /proc/1/comm')" = systemd ]; then
+		STARTED=no
+		for _ in $(seq 1 60); do
+			[ "$(sh_in "$RESTORED" 'cat /run/e2e-service-started 2>/dev/null')" = started ] && { STARTED=yes; break; }
+			sleep 1
+		done
+		expect_true "services start in the restored distro" [ "$STARTED" = yes ]
+	fi
 	wsl_exe --terminate "$RESTORED" </dev/null >/dev/null 2>&1
 fi
 unregister_guarded "$RESTORED" "$RESTORED_DIR" 2>/dev/null
@@ -532,12 +533,195 @@ expect_has "$DISTRO: can be backed up" "it checks the test distro"
 expect_has "Smart App Control" "it checks Smart App Control"
 expect_has "Schedule: every day at 04:30" "it finds the scheduled task"
 expect_has "the last success was" "and the last successful backup"
+expect_lacks "Other accounts on this PC" "it does not warn about a backup folder that only this account can read"
+
+section "13d. Failures reach the webhook, and a full disk is handled"
+# A listener inside WSL plays the part of the notification service.
+HOOK_LOG="$SANDBOX/hook.log"
+rm -f "$SANDBOX/hook.port"
+node -e '
+const http = require("http"), fs = require("fs");
+const server = http.createServer((req, res) => {
+  let body = "";
+  req.on("data", (chunk) => (body += chunk));
+  req.on("end", () => {
+    fs.appendFileSync(process.argv[1], JSON.stringify({ url: req.url, title: req.headers.title, body }) + "\n");
+    res.end("ok");
+  });
+});
+server.listen(0, "0.0.0.0", () => fs.writeFileSync(process.argv[2], String(server.address().port)));
+' "$HOOK_LOG" "$SANDBOX/hook.port" &
+HOOK_PID=$!
+for _ in $(seq 1 50); do [ -s "$SANDBOX/hook.port" ] && break; sleep 0.1; done
+HOOK_PORT="$(cat "$SANDBOX/hook.port" 2>/dev/null)"
+if [ -n "$HOOK_PORT" ] && win "$SYS32/curl.exe" -s -m 5 -o NUL "http://localhost:$HOOK_PORT/ping" </dev/null 2>/dev/null; then
+	run config --webhook "http://localhost:$HOOK_PORT/hook-secret" --notify always
+	expect_rc 0 "config accepts a webhook"
+	expect_lacks "hook-secret" "and shows only its host, not the rest of the address"
+	: >"$HOOK_LOG"
+	run run
+	expect_rc 0 "a run succeeds with the webhook set"
+	expect_true "with notifications set to always, the success is reported" grep -q '"url":"/hook-secret"' "$HOOK_LOG"
+	expect_true "the log does not contain the webhook address" bash -c "! grep -q hook-secret '$HOME_DIR/wslbak.log'"
+	: >"$HOOK_LOG"
+	KEPT="$(backups)"
+	# The disk "fills up" two megabytes into the archive.
+	run_with WSLBAK_TEST_DISK_FULL_AFTER=2000000 -- run
+	expect_rc 2 "run fails when the disk fills up half-way"
+	expect_has "Could not write the backup file" "and says the backup file could not be written"
+	expect_true "the half-written file was removed" [ -z "$(find "$DEST/$DISTRO" -name '*.partial')" ]
+	expect_true "the earlier backups are untouched" [ "$(backups)" = "$KEPT" ]
+	expect_true "the failure reached the webhook" grep -q 'Could not write the backup file' "$HOOK_LOG"
+	expect_true "and the message names no file" bash -c "! grep -q -e 'tar\.gz' -e 'partial' -e 'wslbak-fixture' '$HOOK_LOG'"
+	run status
+	expect_has "Problem in the latest run" "status shows the failed run"
+	run config --webhook off --notify failure
+	expect_rc 0 "the webhook is removed again"
+	run run --no-verify
+	expect_rc 0 "the next run succeeds"
+else
+	skip "Windows cannot reach a listener inside WSL on localhost"
+fi
+kill "$HOOK_PID" 2>/dev/null
+HOOK_PID=""
+
+section "13e. The task starts by itself when its time comes"
+if fast; then
+	skip "waiting for the scheduled time (E2E_FAST)"
+else
+	rm -f "$HOME_DIR/state.json"
+	LAST_BEFORE="$(newest_backup)"
+	RUNS_BEFORE="$(grep -c 'scheduled=true' "$HOME_DIR/wslbak.log" 2>/dev/null)"
+	# A whole minute between 75 and 135 seconds from now, by the Windows clock.
+	AT="$(win "$PS" -NoProfile -Command "(Get-Date).AddSeconds(135).ToString('HH:mm')" </dev/null 2>/dev/null | tr -d '\r')"
+	POWER="$(win "$PS" -NoProfile -Command "(Get-CimInstance Win32_Battery | Select-Object -First 1).BatteryStatus" </dev/null 2>/dev/null | tr -d '\r')"
+	run config --at "$AT"
+	expect_rc 0 "the daily time is moved to $AT, about two minutes away"
+	for _ in $(seq 1 420); do
+		[ "$(newest_backup)" != "$LAST_BEFORE" ] && grep -q '"lastResult": "ok"' "$HOME_DIR/state.json" 2>/dev/null && break
+		sleep 1
+	done
+	expect_true "a backup appeared without anybody starting the task" [ "$(newest_backup)" != "$LAST_BEFORE" ]
+	expect_true "it was the scheduled run" [ "$(grep -c 'scheduled=true' "$HOME_DIR/wslbak.log" 2>/dev/null)" -gt "${RUNS_BEFORE:-0}" ]
+	expect_true "and it succeeded" grep -q '"lastResult": "ok"' "$HOME_DIR/state.json"
+	case "$POWER" in
+		1) echo "  (the PC was running on battery)" ;;
+		"") ;;
+		*) echo "  (the PC was on mains power)" ;;
+	esac
+	run config --at 04:30
+fi
+
+section "13f. A Windows notification really arrives"
+TOAST_KEY='HKCU\Software\Classes\AppUserModelId\Boring206.wslbak'
+if [ -z "${E2E_TOAST:-}" ]; then
+	skip "showing a notification on screen (set E2E_TOAST=1 to include it)"
+elif ! command -v python3 >/dev/null 2>&1; then
+	skip "python3 is needed to read the notification store"
+else
+	# Windows keeps notifications in a small database. This prints how many of them are
+	# wslbak's, followed by the text of the newest one.
+	toasts() {
+		local copy="$SANDBOX/wpn" store
+		store="$(wslpath -u "$(win "$SYS32/cmd.exe" /c 'echo %LOCALAPPDATA%' </dev/null 2>/dev/null | tr -d '\r')")/Microsoft/Windows/Notifications"
+		mkdir -p "$copy" && cp "$store"/wpndatabase.db* "$copy"/ 2>/dev/null
+		python3 - "$copy/wpndatabase.db" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+rows = db.execute("""select n.Payload from Notification n join NotificationHandler h on n.HandlerId = h.RecordId
+                     where h.PrimaryId = 'Boring206.wslbak' and n.Type = 'toast' order by n.Id""").fetchall()
+last = rows[-1][0] if rows else b""
+print(len(rows), (last.decode("utf-8", "replace") if isinstance(last, bytes) else str(last)).replace("\n", " "))
+PY
+	}
+	# Windows only shows notifications from a sender it knows; init registers wslbak as one,
+	# except in the sandbox. Do the same for the length of this check.
+	if ! win "$REG" query "$TOAST_KEY" </dev/null >/dev/null 2>&1; then
+		win "$REG" add "$TOAST_KEY" /v DisplayName /d wslbak /f </dev/null >/dev/null 2>&1 && TOAST_KEY_ADDED=1
+	fi
+	TOASTS_BEFORE="$(toasts | cut -d' ' -f1)"
+	sed -i 's/"toast": false/"toast": true/' "$HOME_DIR/config.json"
+	run_with WSLBAK_TEST_TOAST=1 WSLBAK_TEST_DISK_FULL_AFTER=2000000 -- run
+	expect_rc 2 "a run that fails raises a notification"
+	NEWEST=""
+	for _ in $(seq 1 20); do
+		NEWEST="$(toasts)"
+		[ "${NEWEST%% *}" -gt "${TOASTS_BEFORE:-0}" ] 2>/dev/null && break
+		sleep 1
+	done
+	expect_true "Windows accepted it and put it in the notification centre" [ "${NEWEST%% *}" -gt "${TOASTS_BEFORE:-0}" ]
+	expect_true "it carries the short description of the problem" grep -q 'Could not write the backup file' <<<"$NEWEST"
+	expect_true "and no file name" bash -c '! grep -q -e "tar\.gz" -e "partial" <<<"$0"' "$NEWEST"
+	sed -i 's/"toast": true/"toast": false/' "$HOME_DIR/config.json"
+	if [ -n "${TOAST_KEY_ADDED:-}" ]; then
+		win "$REG" delete "$TOAST_KEY" /f </dev/null >/dev/null 2>&1
+		TOAST_KEY_ADDED=""
+	fi
+	run run --no-verify
+	expect_rc 0 "the next run succeeds"
+fi
 
 section "14. Other language"
 OUT="$(timeout 60 node bin/wslbak.js --lang zh-TW --home "$HOME_DIR" status </dev/null 2>&1 | tr -d '\r')"
 expect_has "排程：每天 04:30" "--lang zh-TW switches the interface to Chinese"
 OUT="$(WSLBAK_LANG=zh-TW timeout 60 node bin/wslbak.js --home "$HOME_DIR" list </dev/null 2>&1 | tr -d '\r')"
 expect_has "已驗證" "WSLBAK_LANG is honoured from inside WSL"
+
+section "14b. In a real console window"
+# Everything above reads the program's output through a pipe. A console is different: the
+# program writes to it in another way, the console has a code page and its own idea of how
+# wide a character is, and questions are answered from the keyboard.
+EXE="bin/wslbak-$([ "$(uname -m)" = aarch64 ] && echo arm64 || echo x64).exe"
+if fast; then
+	skip "the console window (E2E_FAST)"
+elif [ ! -f bin/e2e-console.exe ]; then
+	skip "bin/e2e-console.exe is missing (npm run build makes it)"
+else
+	# console <code page> <keys> <text to wait for> <arguments>: run wslbak in a hidden
+	# console of its own. The screen ends up in OUT, its cell map in CELLS, the exit code in RC.
+	console() {
+		local cp="$1" keys="$2" after="$3" result="$SANDBOX/console.txt"
+		shift 3
+		rm -f "$result"
+		win "$PWD/bin/e2e-console.exe" -out "$(wslpath -w "$result")" -cp "$cp" -type "$keys" -after "$after" -timeout 240 -- \
+			"$(wslpath -w "$PWD/$EXE")" --home "$(wslpath -w "$HOME_DIR")" "$@" </dev/null >/dev/null 2>&1
+		RC="$(sed -n '1s/^exit=//p' "$result" 2>/dev/null)"
+		OUT="$(sed -n '/^\[text\]$/,/^\[cells\]$/p' "$result" 2>/dev/null | sed '1d;$d')"
+		CELLS="$(sed -n '/^\[cells\]$/,$p' "$result" 2>/dev/null | sed '1d')"
+	}
+	# Where the columns of the backup table start, counted in console cells, for the header
+	# and every row: one line per distinct layout, so exactly one line means aligned.
+	table_layouts() {
+		local first last
+		first="$(grep -n -E '^  [0-9]{8}T[0-9]{6}Z' <<<"$OUT" | head -n 1 | cut -d: -f1)"
+		last="$(grep -n -E '^  [0-9]{8}T[0-9]{6}Z' <<<"$OUT" | tail -n 1 | cut -d: -f1)"
+		[ -n "$first" ] || return 0
+		sed -n "$((first - 1)),${last}p" <<<"$CELLS" | awk '{
+			out = ""; gap = 2
+			for (i = 1; i <= length($0); i++) {
+				if (substr($0, i, 1) == " ") gap++
+				else { if (gap >= 2) out = out " " i; gap = 0 }
+			}
+			print out
+		}' | sort -u
+	}
+	console 950 "" "" --lang zh-TW list
+	expect_rc 0 "list runs in a console set to code page 950 (Traditional Chinese)"
+	expect_has "已驗證" "Chinese text is shown as Chinese"
+	expect_lacks "[0m" "colour codes are interpreted, not printed"
+	expect_true "the table columns line up, counted the way the console counts width" [ "$(table_layouts | wc -l)" = 1 ]
+	console 437 "" "" --lang zh-TW list
+	expect_has "已驗證" "the text is still right in a console set to code page 437"
+	expect_true "and the columns still line up" [ "$(table_layouts | wc -l)" = 1 ]
+	console 950 'n\r' '[y/N]' --lang en uninstall
+	expect_has "Proceed? [y/N] n" "a question can be answered from the keyboard"
+	expect_true "answering n leaves the scheduled task in place" task_exists
+	expect_true "and the installed program" [ -f "$HOME_DIR/program/wslbakw.exe" ]
+	# init asks twice: whether to go ahead, and whether to make the first backup right away.
+	console 950 '是\rn\r' '[y/N]' --lang zh-TW init -d "$DISTRO" --dest "$(wslpath -w "$DEST")" --keep 2 --at 4:30
+	expect_rc 0 "typing 是 at the Chinese question goes ahead"
+	expect_has "設定完成" "and the setup is carried out"
+fi
 
 section "15. Bad arguments"
 run frobnicate
@@ -567,5 +751,192 @@ expect_true "the look-alike distro survived uninstall" registered "$DECOY"
 expect_true "the test distro itself was never removed" registered "$DISTRO"
 unregister_guarded "$DECOY" "$DECOY_DIR" 2>/dev/null
 
-printf '\n%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
-[ "$fail" -eq 0 ]
+section "17. Backups on a network share"
+# The administrative share of the drive the sandbox is on, reached through the loopback
+# address: a real SMB path to the same folder. Not every account may use it.
+SMB_DEST="\\\\localhost\\${SANDBOX_WIN%%:*}\$${SANDBOX_WIN#?:}\\smb-dest"
+if fast; then
+	skip "the network share (E2E_FAST)"
+elif [ "$(SMB_DEST="$SMB_DEST" WSLENV="${WSLENV:+$WSLENV:}SMB_DEST" win "$PS" -NoProfile -Command 'New-Item -ItemType Directory -Force -Path $env:SMB_DEST -ErrorAction SilentlyContinue | Out-Null; if (Test-Path -LiteralPath $env:SMB_DEST) { "ok" }' </dev/null 2>/dev/null | tr -d '\r')" != ok ]; then
+	skip "this account cannot write to $SMB_DEST"
+else
+	run init -d "$DISTRO" --dest "$SMB_DEST" --keep 2 --yes
+	expect_rc 0 "init accepts a destination on a network share"
+	run run
+	expect_rc 0 "a backup to the share succeeds"
+	expect_has "test restore passed" "and passes its test restore"
+	expect_true "the archive is on the share" [ -n "$(find "$SANDBOX/smb-dest/$DISTRO" -name '*.tar.gz' 2>/dev/null)" ]
+	expect_true "with no partial file left" [ -z "$(find "$SANDBOX/smb-dest" -name '*.partial' 2>/dev/null)" ]
+	run list
+	expect_has "verified" "list reads the backups from the share"
+	run files --find plain.txt
+	expect_rc 0 "files reads the index from the share"
+	run restore --dry-run
+	expect_rc 0 "restore plans a restore from the share"
+	run doctor
+	expect_true "doctor copes with a destination that has no drive letter" [ "$RC" = 0 -o "$RC" = 1 ]
+	expect_has "smb-dest" "and reports on it"
+	run uninstall --yes
+	expect_rc 0 "uninstall succeeds"
+fi
+
+section "18. A backup drive that is not there"
+# A drive letter that can be made to disappear stands in for an external drive that is
+# unplugged: subst maps a letter to a folder, for this Windows session only.
+SUBST_LETTER=""
+if fast; then
+	skip "the disappearing drive (E2E_FAST)"
+else
+	for letter in W V U T S R Q P; do
+		if [ "$(win "$SYS32/cmd.exe" /c "if exist $letter:\\ (echo used) else (echo free)" </dev/null 2>/dev/null | tr -d '\r')" = free ]; then
+			SUBST_LETTER="$letter"
+			break
+		fi
+	done
+	mkdir -p "$SANDBOX/drive"
+	if [ -n "$SUBST_LETTER" ] && win "$SYS32/subst.exe" "$SUBST_LETTER:" "$SANDBOX_WIN\\drive" </dev/null >/dev/null 2>&1; then
+		run init -d "$DISTRO" --dest "$SUBST_LETTER:\\backup" --keep 2 --yes
+		expect_rc 0 "init accepts a destination on the drive $SUBST_LETTER:"
+		run run --no-verify
+		expect_rc 0 "a backup to the drive succeeds"
+		ON_DRIVE="$(find "$SANDBOX/drive/backup/$DISTRO" -name '*.tar.gz' 2>/dev/null | wc -l)"
+		expect_true "the archive is on the drive" [ "$ON_DRIVE" = 1 ]
+		win "$SYS32/subst.exe" "$SUBST_LETTER:" /D </dev/null >/dev/null 2>&1
+		run run --no-verify
+		expect_rc 2 "with the drive gone, run fails"
+		expect_has "$SUBST_LETTER:" "and names the place it could not reach"
+		expect_lacks "goroutine" "without crashing"
+		run status
+		expect_has "Problem in the latest run" "status shows the failed run"
+		run doctor
+		expect_true "doctor reports a problem" [ "$RC" = 1 -o "$RC" = 2 ]
+		expect_has "$SUBST_LETTER:" "and names the drive"
+		win "$SYS32/subst.exe" "$SUBST_LETTER:" "$SANDBOX_WIN\\drive" </dev/null >/dev/null 2>&1
+		run run --no-verify
+		expect_rc 0 "once the drive is back, the next run succeeds"
+		expect_true "and adds a backup next to the first" [ "$(find "$SANDBOX/drive/backup/$DISTRO" -name '*.tar.gz' | wc -l)" = 2 ]
+		run uninstall --yes
+		expect_rc 0 "uninstall succeeds"
+		win "$SYS32/subst.exe" "$SUBST_LETTER:" /D </dev/null >/dev/null 2>&1
+	else
+		skip "no free drive letter for subst"
+	fi
+	SUBST_LETTER=""
+fi
+
+section "19. Two distros under one schedule"
+MULTI="wslbak-e2e-m-$RUN_ID"
+MULTI_DIR="$SANDBOX_WIN\\multi"
+if fast; then
+	skip "the second distro (E2E_FAST)"
+else
+	extra_distros+=("$MULTI|$MULTI_DIR")
+	wsl_exe --import "$MULTI" "$MULTI_DIR" "$(wslpath -w "$DEST/$DISTRO/$(newest_backup).tar.gz")" --version 2 </dev/null >/dev/null 2>&1
+	if registered "$MULTI"; then
+		# Left to itself, init never picks a test distro. This switch turns that around, so
+		# that --all and the question "which distro?" can be tried without touching any other
+		# distro on this PC. (Other test distros that happen to exist are included.)
+		ONLY=WSLBAK_TEST_ONLY_TEST_DISTROS=1
+		# The question is only asked when init is going to do something, so answer it, look at
+		# the plan that follows, and then decline to go ahead.
+		BEFORE="$(snapshot)"
+		ensure_interop
+		OUT="$(printf '1\nn\n' | env "$ONLY" WSLENV="${WSLENV:+$WSLENV:}${ONLY%%=*}" timeout 120 "${WB[@]}" init --dest "$DEST" 2>&1 | tr -d '\r'; exit "${PIPESTATUS[1]}")"
+		RC=$?
+		expect_rc 0 "without -d, init asks which distro and takes a number for an answer"
+		expect_has "[2] " "the question numbers the distros to choose from"
+		expect_has "$MULTI" "and names them"
+		expect_has "About to set up" "the plan for the chosen one follows"
+		expect_true "declining at the next question leaves everything as it was" [ "$(snapshot)" = "$BEFORE" ]
+		run_with "$ONLY" -- init --all --dest "$DEST" --keep 2 --yes
+		expect_rc 0 "init --all sets up every distro that can be backed up"
+		expect_has "$DISTRO" "the test distro"
+		expect_has "$MULTI" "and the second one"
+		run config -d "$MULTI"
+		expect_rc 0 "the second distro has settings of its own"
+		run run
+		expect_rc 0 "one run backs up both, each with its test restore"
+		MULTI_COUNT="$(find "$DEST/$MULTI" -name '*.tar.gz' 2>/dev/null | wc -l)"
+		expect_true "the second distro has its own folder of backups" [ "$MULTI_COUNT" = 1 ]
+		run list
+		expect_has "$MULTI" "list shows the second distro"
+		expect_has "$DISTRO  " "next to the first"
+		run status
+		expect_rc 0 "status is content with both"
+		run config -d "$MULTI" --disable
+		expect_rc 0 "one of them can be turned off"
+		run run --no-verify
+		expect_rc 0 "the next run succeeds"
+		expect_true "and leaves the disabled distro alone" [ "$(find "$DEST/$MULTI" -name '*.tar.gz' | wc -l)" = "$MULTI_COUNT" ]
+		run uninstall --yes
+		expect_rc 0 "uninstall succeeds"
+		wsl_exe --terminate "$MULTI" </dev/null >/dev/null 2>&1
+	else
+		skip "could not create the second distro"
+	fi
+	unregister_guarded "$MULTI" "$MULTI_DIR" 2>/dev/null
+fi
+
+section "20. Upgrading from an older version"
+OLD="$SANDBOX/old"
+if fast; then
+	skip "the upgrade (E2E_FAST)"
+elif node scripts/build.mjs --as 0.0.1 --into "$OLD" >/dev/null 2>&1 && [ -f "$OLD/wslbak.exe" ]; then
+	old() {
+		ensure_interop
+		OUT="$(timeout 600 "$OLD/wslbak.exe" --lang en --home "$(wslpath -w "$HOME_DIR")" "$@" 2>&1 </dev/null | tr -d '\r'; exit "${PIPESTATUS[0]}")"
+		RC=$?
+	}
+	installed_version() {
+		ensure_interop
+		timeout 60 "$HOME_DIR/program/wslbak.exe" --version </dev/null 2>/dev/null | tr -d '\r'
+	}
+	old init -d "$DISTRO" --dest "$(wslpath -w "$DEST")" --keep 2 --yes
+	expect_rc 0 "version 0.0.1 sets up backups"
+	expect_true "and installs itself" [ "$(installed_version)" = "wslbak 0.0.1" ]
+	run status
+	expect_true "running the newer version replaces the installed copy" [ "$(installed_version)" = "wslbak $VERSION" ]
+	expect_true "the scheduled task is still there" task_exists
+	old status
+	expect_true "running the older version again does not put the old copy back" [ "$(installed_version)" = "wslbak $VERSION" ]
+	run run --no-verify
+	expect_rc 0 "the newer version backs up with the settings the older one wrote"
+	old list
+	expect_rc 0 "the older version can still read the backups"
+	expect_has "$(newest_backup)" "including the one the newer version made"
+	run uninstall --yes
+	expect_rc 0 "uninstall succeeds"
+else
+	skip "Go is not available here to build an older version"
+fi
+
+section "21. Installing the packed npm package"
+if fast; then
+	skip "the npm package (E2E_FAST)"
+elif ! command -v npm >/dev/null 2>&1; then
+	skip "npm is not installed"
+else
+	TGZ="$(npm pack --ignore-scripts --silent --pack-destination "$SANDBOX" 2>/dev/null | tail -n 1)"
+	if [ -n "$TGZ" ] && [ -f "$SANDBOX/$TGZ" ]; then
+		ok "npm pack made $TGZ"
+		if npm install --global --prefix "$SANDBOX/npm-wsl" --silent --no-audit --no-fund "$SANDBOX/$TGZ" >/dev/null 2>&1; then
+			ensure_interop
+			OUT="$(timeout 120 "$SANDBOX/npm-wsl/bin/wslbak" --version </dev/null 2>&1 | tr -d '\r')"
+			expect_true "installed inside WSL, the command runs" [ "$OUT" = "wslbak $VERSION" ]
+			OUT="$(timeout 120 "$SANDBOX/npm-wsl/bin/wslbak" --lang en --home "$HOME_DIR" init -d "$DISTRO" --dest "$DEST" --dry-run </dev/null 2>&1 | tr -d '\r')"
+			expect_has "About to set up" "and can plan a setup"
+		else
+			bad "npm install of the packed package failed inside WSL"
+		fi
+		if win "$SYS32/where.exe" npm.cmd </dev/null >/dev/null 2>&1; then
+			OUT="$(NPM_PREFIX="$SANDBOX_WIN\\npm-win" NPM_TGZ="$SANDBOX_WIN\\$TGZ" WSLENV="${WSLENV:+$WSLENV:}NPM_PREFIX:NPM_TGZ" win "$PS" -NoProfile -Command '& npm.cmd install --global --prefix $env:NPM_PREFIX --silent --no-audit --no-fund $env:NPM_TGZ | Out-Null; & (Join-Path $env:NPM_PREFIX "wslbak.cmd") --version' </dev/null 2>&1 | tr -d '\r')"
+			expect_true "installed on Windows, the command runs" [ "$OUT" = "wslbak $VERSION" ]
+		else
+			skip "npm is not installed on Windows"
+		fi
+	else
+		bad "npm pack did not produce a package"
+	fi
+fi
+
+finish

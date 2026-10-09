@@ -27,6 +27,32 @@ jobs:
       - name: The launcher starts the executable
         run: node bin/wslbak.js --version
 
+  # The arm64 executables are cross-compiled on x64 above; here they run on real arm64
+  # hardware. Hosted arm64 runners cannot run WSL2, so this stops at what works without it.
+  arm64:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: npm test
+      - run: npm run build
+      - name: The launcher picks the arm64 executable and it starts
+        shell: pwsh
+        run: |
+          node bin/wslbak.js --version
+          node bin/wslbak.js --lang en --help | Select-Object -First 3
+          if ((& bin/wslbak-arm64.exe --version) -notmatch '^wslbak \d') { exit 1 }
+      - name: The windowless executable starts too
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath bin/wslbakw-arm64.exe -ArgumentList '--version' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { exit 1 }
+
   # The package also installs on Linux, where it must refuse politely outside WSL.
   launcher-outside-wsl:
     runs-on: ubuntu-latest

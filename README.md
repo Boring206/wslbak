@@ -188,9 +188,11 @@ the backup.
 
 After a backup is written, wslbak imports it with `wsl --import` as a temporary distro, runs a check
 inside it, and unregisters it again. The check confirms that the default user and their home
-directory exist and that 512 files, picked at random while the backup was being read, have the same
-SHA-256 as they had then. Before that, the whole archive is read back and compared with the SHA-256
-recorded when it was written.
+directory exist, that 512 files, picked at random while the backup was being read, have the same
+SHA-256 as they had then, and that the eight largest files have the size they had (too big to hash
+every time, and the ones an importer is most likely to get wrong). Before that, the whole archive
+is read back and compared with the SHA-256 recorded when it was written. If the importer complains
+that it could not read part of the archive, the test restore fails even though WSL reports success.
 
 The temporary distro must not come alive: all WSL2 distros share one network namespace, so a faithful
 copy that boots would start a second set of your services and scheduled jobs, with your credentials.
@@ -224,6 +226,10 @@ missing, or when the installed program has disappeared.
 - The scripts that run inside your distro never delete anything, and use nothing beyond the shell
   and coreutils. What you type for `--path`, `--into` and `--exclude` is never placed on a command
   line inside the distro.
+- File names and messages that come from inside the distro are shown with control characters made
+  visible, so a file with a crafted name cannot send commands to your terminal.
+- Single files only go back into the distro the backup folder belongs to, whatever the records in
+  that folder say.
 - Distros managed by another program (`docker-desktop*`, `rancher-desktop*`, `podman-machine-*`) and
   WSL1 distros are refused with a reason.
 - Only one wslbak works at a time; a second one exits with code 3.
@@ -234,6 +240,12 @@ missing, or when the installed program has disappeared.
 on `/` with `--one-file-system` and writes the raw archive to stdout. On the Windows side wslbak
 compresses it with parallel gzip, hashes it, and writes `<id>.tar.gz.partial`, which is renamed only
 when tar reported success and the number of bytes received equals the number tar says it wrote.
+
+One field of tar's output is filled in on the way. For a file of 8 GiB or more, GNU tar records the
+size only in an extended header and leaves the size in the file's own header at zero. The importer
+that ships with WSL 2.7 (bsdtar 3.7.7) believes the zero: such a file comes back empty, and
+`wsl --import` still reports success. wslbak writes the real size into that header as well, so the
+archive restores correctly there too. Nothing else is changed, and the archive stays a valid tar.
 
 The scheduled task belongs to your Windows account and runs with your sign-in session. It starts a
 windowless copy of the program kept in `%LOCALAPPDATA%\Programs\wslbak`, so it does not depend on Node
@@ -249,6 +261,12 @@ last 20 hours.
   but `wsl --import` does not apply them. `wslbak run` tells you how many files are affected
   (systemd's journal folders, which are reset at boot, are not counted). Bringing back single files
   with `--path` does preserve them.
+- **Backups are not encrypted.** A backup holds every file of the distro, private keys and password
+  hashes included. Whoever can read the backup folder can read all of it, and whoever can write to
+  it can alter a backup or the copy of the program kept there. On a PC you share, or on a NAS, keep
+  the folder private to your account; `wslbak doctor` tells you when other accounts on the PC can
+  read it. Only verify or restore backups from a folder that nobody else can write to: a test
+  restore runs programs that come out of the backup.
 - **Every backup is a full copy.** There is no incremental mode yet.
 - **GNU tar is required inside the distro.** A distro with BusyBox tar (Alpine as it comes) or with no
   tar (openSUSE Tumbleweed as it comes) is refused, with the command that installs it.
@@ -258,8 +276,8 @@ last 20 hours.
   the distro's files. When there is not enough, the backup is kept, reported as not verified, and the
   exit code is 1.
 - **The task runs only while you are signed in.** A stopped distro is started for the backup.
-- **The test restore is a sample.** It proves the archive imports and that 512 files are intact, not
-  that every byte of every file is.
+- **The test restore is a sample.** It proves the archive imports, that 512 files are intact and
+  that the largest files have the right size, not that every byte of every file is.
 - **Single files can only be brought back into the distro**, not straight into a Windows folder. From
   Windows, open the result at `\\wsl.localhost\<distro>\<folder>`.
 - Developed on Ubuntu 26.04 and tested end to end on Windows 11 x64 with WSL 2.7 against Debian 13,
@@ -290,6 +308,10 @@ Start with `wslbak doctor`.
   `wsl -u root sh -c "echo ':WSLInterop:M::MZ::/init:P' > /proc/sys/fs/binfmt_misc/register"`.
 - **"cannot run Windows programs" inside WSL.** Windows interop is disabled; check `[interop]` in
   `/etc/wsl.conf`, or use wslbak from Windows instead.
+- **In Git Bash, `--path`, `--into` and `files <path>` fail or find nothing.** Git Bash rewrites
+  arguments that look like Linux paths (`/home/me` becomes `C:/Program Files/Git/home/me`) before
+  wslbak sees them. Put `MSYS_NO_PATHCONV=1` in front of the command, or use PowerShell, cmd or a
+  WSL shell.
 
 ## Development
 
@@ -302,10 +324,17 @@ npm run e2e      # end-to-end tests inside WSL, against a throwaway distro and a
 npm run dist     # release zips, checksums, and winget and scoop manifests in dist/
 ```
 
-`npm run e2e` creates a Debian distro named `wslbak-e2e-<random>` on first use and keeps it for the
-next run; `scripts/e2e-distro.sh destroy` removes it. Set `E2E_DISTRO` to test another family
-(`FedoraLinux-44`, `archlinux`, `openSUSE-Tumbleweed`, `alpine`). The tests never touch another
-distro or your real wslbak settings. When developing inside WSL without Go installed there, the
+`npm run e2e` creates a Debian distro named `wslbak-e2e-<random>` on first use; set
+`KEEP_E2E_DISTRO=1` to keep it for the next run, and remove it with `scripts/e2e-distro.sh destroy`.
+Set `E2E_DISTRO` to test another family (`FedoraLinux-44`, `archlinux`, `openSUSE-Tumbleweed`,
+`alpine`, …), or `E2E_ROOTFS_URL` to import a root file system that `wsl --install` does not offer.
+`E2E_FAST=1` leaves out the parts that only exercise Windows, and `E2E_TOAST=1` adds a check that
+shows a real notification. Two slower scripts are run by hand: `scripts/e2e-scale.sh` (millions of
+files, a file over 8 GiB) and `scripts/e2e-services.sh` (a busy Docker Engine and databases). The
+tests never touch another distro or your real wslbak settings.
+
+The tests reach a few situations through switches that only work together with the sandbox option
+`--home`: the `WSLBAK_TEST_…` environment variables in `testhooks.go`. They do nothing in normal use. When developing inside WSL without Go installed there, the
 build script falls back to `go.exe` on Windows; set the `GO` environment variable to point somewhere
 else.
 

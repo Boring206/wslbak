@@ -15,6 +15,11 @@
 # or the word alpine, which downloads Alpine's mini root file system instead (Alpine is
 # not in that list). Each choice keeps its own test distro, so several can exist at once.
 #
+# For a release that wsl --install does not offer (an older Ubuntu or Debian, NixOS, …),
+# set E2E_ROOTFS_URL to a root file system archive (.tar, .tar.gz, .tar.xz or .wsl); it is
+# downloaded and imported, and E2E_DISTRO is then only a label for it. E2E_ROOTFS_SHA256,
+# when set, must match the download.
+#
 # scripts/e2e.sh sources this file for its helpers.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -110,6 +115,32 @@ import_alpine() {
   return $status
 }
 
+# import_rootfs <name> <Windows folder> <URL>: download a root file system and import it.
+import_rootfs() {
+  local name="$1" dir="$2" url="$3" tmp file status
+  tmp="$(wslpath -u "$(sandbox_win)")/download-$name"
+  mkdir -p "$tmp"
+  file="$tmp/rootfs.tar"
+  case "$url" in
+    *.xz) file="$tmp/rootfs.tar.xz" ;;
+    *.gz | *.tgz | *.wsl) file="$tmp/rootfs.tar.gz" ;;
+  esac
+  curl -fsSL "$url" -o "$file" || return 1
+  if [ -n "${E2E_ROOTFS_SHA256:-}" ]; then
+    echo "$E2E_ROOTFS_SHA256  $file" | sha256sum -c - >/dev/null || { echo "checksum mismatch for $url" >&2; return 1; }
+  fi
+  # Older versions of WSL do not read xz; unpack it here.
+  if [ "${file##*.}" = xz ]; then
+    xz -d "$file" || return 1
+    file="${file%.xz}"
+  fi
+  wsl_exe --import "$name" "$dir" "$(wslpath -w "$file")" --version 2
+  status=$?
+  rm -f "$file"
+  rmdir "$tmp" 2>/dev/null
+  return $status
+}
+
 create() {
   if [ -s "$STATE" ]; then
     echo "a test distro is already recorded: $(cat "$STATE") (run destroy first)" >&2
@@ -121,7 +152,9 @@ create() {
   mkdir -p "$ROOT/local"
   # Recorded before installing, so that a half-finished install can still be cleaned up by destroy.
   printf '%s\n' "$name" > "$STATE"
-  if [ "$FAMILY" = alpine ]; then
+  if [ -n "${E2E_ROOTFS_URL:-}" ]; then
+    import_rootfs "$name" "$dir" "$E2E_ROOTFS_URL" >&2
+  elif [ "$FAMILY" = alpine ]; then
     import_alpine "$name" "$dir" >&2
   else
     wsl_exe --install "$E2E_DISTRO" --name "$name" --location "$dir" --no-launch >&2

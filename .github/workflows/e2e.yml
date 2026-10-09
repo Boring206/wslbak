@@ -1,7 +1,10 @@
-# End-to-end tests on a Windows runner with WSL2: real backups, test restores and
-# restores of a throwaway distro. Started by hand or once a week; it never blocks a
-# release, because hosted runners differ from a desktop PC (elevated account, no
-# interactive sign-in), and the scheduled-task part may not work there.
+# End-to-end tests on Windows runners with WSL2: real backups, test restores and restores
+# of a throwaway distro. Started by hand or once a week; it never blocks a release, because
+# hosted runners differ from a desktop PC (elevated account, no interactive sign-in), and
+# the parts about the scheduled task and the console may not work there.
+#
+# The matrix covers what a single developer PC cannot: other builds of Windows, and
+# Microsoft Defender scanning in real time (hosted runners have it switched off).
 name: e2e
 
 on:
@@ -18,9 +21,20 @@ permissions:
 
 jobs:
   e2e:
-    runs-on: windows-2025
-    timeout-minutes: 45
+    name: e2e (${{ matrix.os }}, Defender real-time ${{ matrix.defender }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            defender: 'off'
+          - os: windows-2025
+            defender: 'on'
+          - os: windows-2022
+            defender: 'off'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -30,13 +44,24 @@ jobs:
         with:
           node-version: 24
       - run: npm run build
+      - name: Windows and WSL versions
+        shell: pwsh
+        run: |
+          cmd /c ver
+          wsl --version
+      - name: Turn on Microsoft Defender's real-time protection
+        if: matrix.defender == 'on'
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $false
+          Get-MpComputerStatus | Select-Object AMServiceEnabled, AntivirusEnabled, RealTimeProtectionEnabled | Format-List
       # The test script runs inside WSL and starts the Windows executables from there,
       # as a user would. This distro only hosts the script; the tests create their own.
       - uses: Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364 # v7.0.0
         with:
           distribution: Debian
           wsl-version: 2
-          additional-packages: nodejs curl
+          additional-packages: nodejs npm curl python3 xz-utils
       - name: Run the end-to-end tests
         shell: wsl-bash {0}
         env:
