@@ -352,6 +352,28 @@ type catalog struct {
 	DocAntivirus    string // 名稱
 	DocAntivirusFix string // 資料夾
 
+	FlagNeeds          string // 旗標, 旗標
+	BadInto            string // 值
+	PathRoot           string
+	PathDistroGone     string // distro
+	PathPlan           string // 數量, 大小, 編號, distro, 資料夾
+	PathTargetUsed     string // 資料夾
+	PathTargetNotDir   string // 路徑
+	PathTargetNoParent string // 資料夾
+	PathPrepareFailed  string // 資料夾, 代碼
+	PathExtracting     string
+	ProgressScanning   string
+	PathFailed         string // 細節
+	PathArchiveChanged string // 檔名
+	PathDone           string // 數量, 資料夾
+	PathExplorer       string // 路徑
+
+	BriefOther    string
+	BriefNoStream string
+	BriefWrite    string
+	BriefTar      string
+	BriefSeeLog   string
+
 	// 放在備份資料夾裡的說明檔；兩種語言都會寫進去。
 	RestoreReadme string
 }
@@ -389,6 +411,8 @@ var zhTW = catalog{
       --find <文字>        files：列出檔名或路徑包含這段文字的項目
       --name <名稱>        restore：還原出來的 distro 要叫什麼
       --to <資料夾>        restore：還原出來的 distro 要放在哪裡
+      --path <路徑>        restore：只取回備份裡的這個檔案或資料夾（可重複），要搭配 --into
+      --into <資料夾>      restore：取回的檔案放進 distro 裡的這個資料夾（必須不存在或是空的）
   -n, --dry-run            只列出會做什麼，不實際執行
   -y, --yes                不詢問直接進行
       --lang <語言>        介面語言：en 或 zh-TW（也可以設定環境變數 WSLBAK_LANG）
@@ -621,6 +645,26 @@ var zhTW = catalog{
 	WarmUpSlow:          "防毒軟體花了 %s 檢查新安裝的程式；這只會發生在每個新版本第一次執行時。",
 	DocAntivirus:        "啟用中的防毒軟體：%s。新版的 wslbak 第一次執行時可能被它扣住檢查，甚至關進沙箱。",
 	DocAntivirusFix:     "排程的備份如果一直沒有執行，把 %s 加入防毒軟體的例外清單",
+	FlagNeeds:           "%[1]s 要和 %[2]s 一起使用",
+	BadInto:             "--into 要是 distro 裡的絕對路徑，例如 /home/me/restored：%s",
+	PathRoot:            "要取回整個 distro 的話，直接用 wslbak restore，不要加 --path。",
+	PathDistroGone:      "要把檔案放回 %s，但這個 distro 已經不在了。可以先用 wslbak restore 把整個 distro 還原回來。",
+	PathPlan:            "將從備份 %[3]s 取回 %[1]d 個項目（共 %[2]s），放到 %[4]s 裡的 %[5]s\n完整的路徑會在那個資料夾底下重建，不會覆蓋任何現有的檔案。",
+	PathTargetUsed:      "%s 已經存在而且不是空的。請用 --into 指定一個不存在、或是空的資料夾。",
+	PathTargetNotDir:    "%s 已經存在，而且不是資料夾。",
+	PathTargetNoParent:  "%s 的上一層資料夾不存在。",
+	PathPrepareFailed:   "無法在 distro 裡準備 %[1]s（%[2]s）。細節在紀錄檔裡。",
+	PathExtracting:      "正在讀取備份並取回檔案…",
+	ProgressScanning:    "已讀取",
+	PathFailed:          "取回失敗：%s",
+	PathArchiveChanged:  "檔案已經取回，但 %s 和備份當時不一樣了（可能已損壞），取回的內容不一定正確。建議改用另一份備份再取一次。",
+	PathDone:            "已取回 %[1]d 個項目到 %[2]s",
+	PathExplorer:        "在檔案總管可以從這裡打開：%s",
+	BriefOther:          "備份失敗。",
+	BriefNoStream:       "無法從 distro 取得資料。",
+	BriefWrite:          "寫入備份檔失敗（磁碟滿了，或連不到備份資料夾？）。",
+	BriefTar:            "tar 回報錯誤。",
+	BriefSeeLog:         " 細節在那台電腦的紀錄檔裡（wslbak status 也看得到）。",
 	RestoreReadme: `這個資料夾是 wslbak 做的 WSL 備份（https://github.com/Boring206/wslbak）
 
 每個子資料夾是一個 distro。一份備份有兩個檔案：
@@ -681,6 +725,8 @@ Options:
       --find <text>          files: list entries whose name or path contains this text
       --name <name>          restore: name of the restored distro
       --to <folder>          restore: where to put the restored distro
+      --path <path>          restore: bring back only this file or folder from the backup (repeatable); needs --into
+      --into <folder>        restore: put those files into this folder inside the distro (it must not exist, or be empty)
   -n, --dry-run              Only show what would be done
   -y, --yes                  Do not ask for confirmation
       --lang <language>      Interface language: en or zh-TW (or set WSLBAK_LANG)
@@ -913,6 +959,26 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	WarmUpSlow:          "Antivirus software took %s to check the newly installed program; this happens only the first time each new version runs.",
 	DocAntivirus:        "Active antivirus: %s. It may hold a new version of wslbak for checking the first time it runs, or even run it in a sandbox.",
 	DocAntivirusFix:     "If scheduled backups never run, add %s to the antivirus exceptions",
+	FlagNeeds:           "%[1]s must be used together with %[2]s",
+	BadInto:             "--into must be an absolute path inside the distro, such as /home/me/restored: %s",
+	PathRoot:            "To bring back the whole distro, use wslbak restore without --path.",
+	PathDistroGone:      "The files would go back into %s, but that distro no longer exists. Restore the whole distro with wslbak restore first.",
+	PathPlan:            "%[1]d item(s) (%[2]s) from backup %[3]s will be put into %[5]s inside %[4]s\nTheir full paths are recreated under that folder, so no existing file is overwritten.",
+	PathTargetUsed:      "%s already exists and is not empty. Give --into a folder that does not exist yet, or an empty one.",
+	PathTargetNotDir:    "%s already exists and is not a folder.",
+	PathTargetNoParent:  "The folder that should contain %s does not exist.",
+	PathPrepareFailed:   "Could not prepare %[1]s inside the distro (%[2]s). Details are in the log file.",
+	PathExtracting:      "Reading the backup and bringing the files back…",
+	ProgressScanning:    "read",
+	PathFailed:          "Bringing the files back failed: %s",
+	PathArchiveChanged:  "The files were brought back, but %s is no longer what was written (it may be damaged), so they may not be correct. Try again from another backup.",
+	PathDone:            "Brought back %[1]d item(s) into %[2]s",
+	PathExplorer:        "In Explorer it is here: %s",
+	BriefOther:          "The backup failed.",
+	BriefNoStream:       "Could not read from the distro.",
+	BriefWrite:          "Could not write the backup file (disk full, or the backup folder unreachable?).",
+	BriefTar:            "tar reported an error.",
+	BriefSeeLog:         " Details are in the log file on that PC (wslbak status shows them too).",
 	RestoreReadme: `WSL backups made by wslbak (https://github.com/Boring206/wslbak)
 
 Each subfolder is one distro. A backup is two files:

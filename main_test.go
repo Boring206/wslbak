@@ -37,6 +37,8 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"files", "20261008T030000Z", "/home/me", "-d", "Ubuntu"}, options{command: "files", id: "20261008T030000Z", target: "/home/me", distro: "Ubuntu"}},
 		{[]string{"files", "--find", "notes.txt"}, options{command: "files", find: "notes.txt"}},
 		{[]string{"doctor", "-d", "Ubuntu"}, options{command: "doctor", distro: "Ubuntu"}},
+		{[]string{"restore", "--path", "/home/me/a b", "--path=/etc/hosts", "--into", "/home/me/restored", "20261008T030000Z"},
+			options{command: "restore", id: "20261008T030000Z", paths: []string{"/home/me/a b", "/etc/hosts"}, into: "/home/me/restored"}},
 		// --exclude 可以重複，寫 / 或 ./ 開頭都行，存下來一律是 ./ 開頭。
 		{[]string{"config", "-d", "Ubuntu", "--exclude", "/home/*/Downloads/*", "--exclude=./var/lib/docker/*", "--unexclude", "/tmp/*"},
 			options{command: "config", distro: "Ubuntu", exclude: []string{"./home/*/Downloads/*", "./var/lib/docker/*"}, unexclude: []string{"./tmp/*"}}},
@@ -94,6 +96,11 @@ func TestParseArgsErrors(t *testing.T) {
 		{[]string{"files", "/etc", "/home"}, "多出來的參數：/home"},
 		{[]string{"files", "20261008T030000Z", "/etc", "extra"}, "多出來的參數：extra"},
 		{[]string{"list", "--find", "x"}, "--find 不能用在 list 指令"},
+		{[]string{"restore", "--path", "/etc/hosts"}, "--path 要和 --into 一起使用"},
+		{[]string{"restore", "--into", "/x"}, "--into 要和 --path 一起使用"},
+		{[]string{"restore", "--path", "/a", "--into", "/x", "--name", "Other"}, "--path 和 --name 不能同時使用"},
+		{[]string{"restore", "--path", "/a", "--to", `D:\x`}, "--path 和 --to 不能同時使用"},
+		{[]string{"verify", "--path", "/a"}, "--path 不能用在 verify 指令"},
 	}
 	for _, c := range cases {
 		_, err := parseArgs(c.args)

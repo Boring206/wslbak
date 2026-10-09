@@ -40,6 +40,11 @@ func TestNormalizeMemberPath(t *testing.T) {
 			t.Errorf("normalizeMemberPath(%q) = %q, %v; want an error", in, got, err)
 		}
 	}
+	for member, want := range map[string]string{"./etc/passwd": "./etc", "./etc": ".", "./home/me/a b/c": "./home/me/a b", ".": "."} {
+		if got := parentOf(member); got != want {
+			t.Errorf("parentOf(%q) = %q, want %q", member, got, want)
+		}
+	}
 	for member, want := range map[string]string{".": "/", "./etc": "/etc", "./home/me/x y": "/home/me/x y"} {
 		if got := displayPath(member); got != want {
 			t.Errorf("displayPath(%q) = %q, want %q", member, got, want)

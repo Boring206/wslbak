@@ -34,6 +34,9 @@ var probeScript string
 //go:embed caches.sh
 var cachesScript string
 
+//go:embed restorefiles.sh
+var restoreFilesScript string
+
 // protoPrefix 是腳本寫到 stderr 的診斷行開頭；沒有這個前綴的行是工具自己的訊息。
 const protoPrefix = "@wslbak\t"
 

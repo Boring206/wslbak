@@ -36,11 +36,13 @@ func taskArguments() string {
 }
 
 type taskSpec struct {
-	SID         string
-	Command     string // 要執行的程式，完整路徑
-	Arguments   string
-	At          string // 每天的 HH:MM
-	LogonDelay  bool   // 加上「登入後過一段時間」的觸發
+	SID       string
+	Command   string // 要執行的程式，完整路徑
+	Arguments string
+	At        string // 每天的 HH:MM
+	// Now 是註冊工作的時間，用來算出第一次執行是哪一天。
+	Now         time.Time
+	LogonDelay  bool // 加上「登入後過一段時間」的觸發
 	Description string
 }
 
@@ -66,6 +68,23 @@ func xmlText(s string) string {
 	return b.String()
 }
 
+// firstStart 回傳工作第一次該執行的時間：now 之後第一個 at（HH:MM，當地時間）。
+//
+// 開始時間不能設在過去。工作設了「錯過排定的時間就盡快補跑」，如果開始時間早於現在，
+// 工作排程器會認為今天那一次已經錯過，在註冊後一兩分鐘自己把它跑起來；
+// 使用者才剛回答「現在先不要備份」，備份卻自己開始了。
+func firstStart(at string, now time.Time) time.Time {
+	hour, minute := 3, 0
+	if clock, ok := normalizeClock(at); ok {
+		fmt.Sscanf(clock, "%d:%d", &hour, &minute)
+	}
+	start := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
+	if !start.After(now) {
+		start = start.AddDate(0, 0, 1)
+	}
+	return start
+}
+
 // taskXML 產生工作的定義。
 func taskXML(spec taskSpec) string {
 	logon := ""
@@ -85,7 +104,7 @@ func taskXML(spec taskSpec) string {
   </RegistrationInfo>
   <Triggers>
     <CalendarTrigger>
-      <StartBoundary>2026-01-01T` + xmlText(spec.At) + `:00</StartBoundary>
+      <StartBoundary>` + firstStart(spec.At, spec.Now).Format("2006-01-02T15:04:05") + `</StartBoundary>
       <Enabled>true</Enabled>
       <ScheduleByDay>
         <DaysInterval>1</DaysInterval>

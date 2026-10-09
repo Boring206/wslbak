@@ -31,6 +31,37 @@ const (
 	maxWarnings = 20
 )
 
+// suspendGap：兩次檢查之間隔了這麼久，代表我們自己被暫停過（電腦睡眠、進入待命、
+// 行程被系統凍結），而不是資料停了。
+const suspendGap = 30 * time.Second
+
+// stallWatch 判斷「資料是不是停住了」。每秒看一次已經讀到的位元組數：
+// 超過 stallLimit 都沒有增加才算停住。筆電闔上蓋子再打開時，中間那段不能算在裡面，
+// 否則一醒來就會被誤判成停住而把備份取消。
+type stallWatch struct {
+	bytes    int64
+	lastMove time.Time
+	lastTick time.Time
+}
+
+func newStallWatch(now time.Time) *stallWatch {
+	return &stallWatch{bytes: -1, lastMove: now, lastTick: now}
+}
+
+// observe 記下這一次看到的位元組數。moved 表示有新的資料；stuck 表示已經停住太久。
+func (w *stallWatch) observe(now time.Time, bytes int64) (moved, stuck bool) {
+	if now.Sub(w.lastTick) > suspendGap {
+		// 剛從暫停中醒來：重新開始計時。
+		w.lastMove = now
+	}
+	w.lastTick = now
+	if bytes != w.bytes {
+		w.bytes, w.lastMove = bytes, now
+		return true, false
+	}
+	return false, now.Sub(w.lastMove) > stallLimit
+}
+
 // 備份失敗的種類。訊息由呼叫端依種類從 catalog 取，Detail 是英文的細節，寫進紀錄檔。
 type backupFailure int
 
@@ -257,19 +288,17 @@ func runBackup(req backupRequest) (*manifest, error) {
 		defer close(watcherGone)
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
-		last, lastMove := int64(-1), time.Now()
+		watch := newStallWatch(time.Now())
 		for {
 			select {
 			case <-done:
 				return
-			case <-ticker.C:
-				n := progress.n.Load()
-				if n != last {
-					last, lastMove = n, time.Now()
-					if req.OnProgress != nil {
-						req.OnProgress(n)
-					}
-				} else if time.Since(lastMove) > stallLimit {
+			case now := <-ticker.C:
+				moved, stuck := watch.observe(now, progress.n.Load())
+				if moved && req.OnProgress != nil {
+					req.OnProgress(progress.n.Load())
+				}
+				if stuck {
 					stalled.Store(true)
 					cancel()
 					return
