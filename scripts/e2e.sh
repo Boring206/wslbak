@@ -152,6 +152,12 @@ expect_rc 0 "init succeeds"
 expect_true "the settings file exists" [ -f "$HOME_DIR/config.json" ]
 expect_true "the program was copied to a fixed place" [ -f "$HOME_DIR/program/wslbakw.exe" ]
 expect_true "the scheduled task exists" task_exists
+# What Task Scheduler itself says about the task, read back from it.
+TASK_XML="$(win "$SYS32/schtasks.exe" /Query /TN "$(task_name)" /XML </dev/null 2>/dev/null | tr -d '\r\0')"
+expect_true "the task may start on battery, and keeps running when the PC goes on battery" bash -c 'grep -q "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" <<<"$0" && grep -q "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>" <<<"$0"' "$TASK_XML"
+expect_true "it makes up for a start that was missed" grep -q '<StartWhenAvailable>true</StartWhenAvailable>' <<<"$TASK_XML"
+expect_true "it also starts ten minutes after signing in" bash -c 'grep -q "<LogonTrigger>" <<<"$0" && grep -q "<Delay>PT10M</Delay>" <<<"$0"' "$TASK_XML"
+expect_true "it does not wake the PC up" grep -q '<WakeToRun>false</WakeToRun>' <<<"$TASK_XML"
 expect_true "the restore kit is in the destination" [ -f "$DEST/wslbak.exe" ]
 expect_true "with its instructions" [ -f "$DEST/README-RESTORE.txt" ]
 run status
@@ -517,7 +523,6 @@ expect_has "not GNU tar" "status remembers the problem"
 sh_in "$DISTRO" 'rm -f /usr/local/bin/tar' >/dev/null
 
 section "13. The scheduled task really runs a backup"
-COUNT_BEFORE="$(backups | wc -l)"
 LAST_BEFORE="$(newest_backup)"
 # A backup that succeeded less than 20 hours ago makes the scheduled run exit at once, so
 # forget the earlier successes first.
@@ -661,6 +666,73 @@ else
 		*) echo "  (the PC was on mains power)" ;;
 	esac
 	run config --at 04:30
+fi
+
+section "13h. A start that was missed is made up for"
+# The PC cannot be switched off for a test. Instead the task is given a start time a few
+# minutes in the past (a switch for the tests allows that): for Task Scheduler this is a
+# start that was missed, and the task is set to run as soon as possible after one.
+if fast; then
+	skip "waiting for the missed start (E2E_FAST)"
+else
+	rm -f "$HOME_DIR/state.json"
+	LAST_BEFORE="$(newest_backup)"
+	RUNS_BEFORE="$(grep -c 'scheduled=true' "$HOME_DIR/wslbak.log" 2>/dev/null)"
+	AT="$(win "$PS" -NoProfile -Command "(Get-Date).AddMinutes(-3).ToString('HH:mm')" </dev/null 2>/dev/null | tr -d '\r')"
+	NOW="$(win "$PS" -NoProfile -Command "(Get-Date).ToString('HH:mm')" </dev/null 2>/dev/null | tr -d '\r')"
+	if [[ "$AT" < "$NOW" ]]; then
+		BEGAN=$SECONDS
+		run_with WSLBAK_TEST_PAST_START=1 -- config --at "$AT"
+		expect_rc 0 "the daily time is set to $AT, three minutes ago"
+		for _ in $(seq 1 900); do
+			[ "$(newest_backup)" != "$LAST_BEFORE" ] && grep -q '"lastResult": "ok"' "$HOME_DIR/state.json" 2>/dev/null && break
+			sleep 1
+		done
+		expect_true "Task Scheduler started the task by itself to make up for it" [ "$(newest_backup)" != "$LAST_BEFORE" ]
+		expect_true "and it was the scheduled run" [ "$(grep -c 'scheduled=true' "$HOME_DIR/wslbak.log" 2>/dev/null)" -gt "${RUNS_BEFORE:-0}" ]
+		echo "  (the backup was there $((SECONDS - BEGAN)) s after the task was registered)"
+	else
+		skip "too close to midnight for a time three minutes ago"
+	fi
+	run config --at 04:30
+fi
+
+section "13i. The program is frozen in the middle of a backup, as when the PC sleeps"
+# A PC that goes to sleep stops the program where it is and lets it go on later; for the
+# program, time has jumped. Here its process is frozen for 40 seconds half-way through a
+# backup that is slowed down so that it lasts long enough. "No data for 8 seconds" counts
+# as stalled in this run, so a program that mistook its own pause for a stall would give up.
+if fast; then
+	skip "freezing the program (E2E_FAST)"
+elif [ ! -f bin/e2e-console.exe ]; then
+	skip "bin/e2e-console.exe is missing (npm run build makes it)"
+else
+	ensure_interop
+	env WSLBAK_TEST_STALL_SECONDS=8 WSLBAK_TEST_READ_MIB_PER_SECOND=4 WSLENV="${WSLENV:+$WSLENV:}WSLBAK_TEST_STALL_SECONDS:WSLBAK_TEST_READ_MIB_PER_SECOND" \
+		timeout 900 "${WB[@]}" run --no-verify >"$SANDBOX/frozen.log" 2>&1 </dev/null &
+	FROZEN_PID=$!
+	for _ in $(seq 1 300); do
+		[ -n "$(find "$DEST/$DISTRO" -name '*.partial' 2>/dev/null)" ] && break
+		sleep 0.2
+	done
+	sleep 3
+	IMAGE="$(basename "$EXE")"
+	WIN_PID="$(win "$SYS32/tasklist.exe" /FI "IMAGENAME eq $IMAGE" /FO CSV /NH </dev/null 2>/dev/null | tr -d '\r' | grep -i "^\"$IMAGE\"" | head -n 1 | cut -d, -f2 | tr -d '"')"
+	PARTIAL_BEFORE="$(find "$DEST/$DISTRO" -name '*.partial' -printf '%s' 2>/dev/null)"
+	if [ -n "$WIN_PID" ] && [ -n "$PARTIAL_BEFORE" ]; then
+		win "$PWD/bin/e2e-console.exe" -suspend "$WIN_PID" -seconds 40 </dev/null >/dev/null 2>&1
+		expect_true "the program was frozen for 40 seconds while the backup was being written" [ $? = 0 ]
+		wait "$FROZEN_PID"
+		RC=$?
+		OUT="$(tr -d '\r' <"$SANDBOX/frozen.log")"
+		expect_rc 0 "after it was let go, the backup finished"
+		expect_has "wrote " "and the archive was written"
+		expect_lacks "no data" "the pause was not mistaken for a stall"
+		expect_true "no partial file is left" [ -z "$(find "$DEST/$DISTRO" -name '*.partial')" ]
+	else
+		wait "$FROZEN_PID"
+		bad "the backup was over before it could be frozen" "$(tr -d '\r' <"$SANDBOX/frozen.log")"
+	fi
 fi
 
 section "13f. A Windows notification really arrives"

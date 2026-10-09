@@ -109,7 +109,7 @@ jobs:
           $version = wslbak --version
           $version
           if ($version -notmatch '^wslbak \d') { exit 1 }
-          scoop uninstall wslbak
+          scoop uninstall local-wslbak
 
   github-release:
     needs: build

@@ -79,7 +79,7 @@ func firstStart(at string, now time.Time) time.Time {
 		fmt.Sscanf(clock, "%d:%d", &hour, &minute)
 	}
 	start := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
-	if !start.After(now) {
+	if !start.After(now) && !pastStartAllowed() {
 		start = start.AddDate(0, 0, 1)
 	}
 	return start

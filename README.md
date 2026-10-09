@@ -335,7 +335,9 @@ Start with `wslbak doctor`.
 
 ## Development
 
-Requires Go 1.25 or newer and Node.js.
+Requires Go 1.26 or newer and Node.js. See [CONTRIBUTING.md](CONTRIBUTING.md) for the rules the code
+keeps to, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how it is put together, and [SECURITY.md](SECURITY.md) for
+reporting a vulnerability.
 
 ```
 npm test         # go vet plus unit tests

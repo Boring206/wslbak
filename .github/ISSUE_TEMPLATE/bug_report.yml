@@ -1,0 +1,30 @@
+name: Something does not work
+description: A backup, restore or the schedule did not do what you expected
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: The command you ran and what it printed.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of wslbak doctor
+      description: Run `wslbak doctor` and paste what it prints. It contains the WSL version, the distro, and the antivirus in use.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Output of wslbak --version
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: The end of the log
+      description: The last lines of `%LOCALAPPDATA%\wslbak\wslbak.log` from the run that went wrong. Check that they contain nothing you would rather not share.
+      render: text

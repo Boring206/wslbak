@@ -59,7 +59,7 @@ func (w *stallWatch) observe(now time.Time, bytes int64) (moved, stuck bool) {
 		w.bytes, w.lastMove = bytes, now
 		return true, false
 	}
-	return false, now.Sub(w.lastMove) > stallLimit
+	return false, now.Sub(w.lastMove) > currentStallLimit()
 }
 
 // 備份失敗的種類。訊息由呼叫端依種類從 catalog 取，Detail 是英文的細節，寫進紀錄檔。
@@ -290,7 +290,7 @@ func runBackup(req backupRequest) (*manifest, error) {
 		}
 	}()
 
-	progress := &progressReader{r: stream.Stdout}
+	progress := &progressReader{r: withTestReadRate(stream.Stdout)}
 	var stalled atomic.Bool
 	done, watcherGone := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -363,7 +363,7 @@ func runBackup(req backupRequest) (*manifest, error) {
 
 	switch {
 	case stalled.Load():
-		return nil, &backupError{failStalled, fmt.Sprintf("no data for %v after %d bytes", stallLimit, idx.Size)}
+		return nil, &backupError{failStalled, fmt.Sprintf("no data for %v after %d bytes", currentStallLimit(), idx.Size)}
 	case sink.err != nil:
 		return nil, &backupError{failWrite, sink.err.Error()}
 	case closeErr != nil:

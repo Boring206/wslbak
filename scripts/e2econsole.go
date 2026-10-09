@@ -5,6 +5,10 @@
 // 文字在指定的字碼頁下是否正確、表格照主控台自己的字寬是否對齊、提示能不能從鍵盤回答。
 //
 //	e2e-console.exe -out result.txt [-cp 950] [-type "y\r"] [-after "[y/N]"] [-timeout 60] -- program args…
+//	e2e-console.exe -suspend <process id> [-seconds 30]
+//
+// 第二種用法把一個行程凍結一段時間再放開，模擬電腦在備份途中睡著又醒來：
+// 對那個行程而言，時間跳了一段，而它什麼都沒做。
 //
 // 結果檔的格式：第一行 exit=<結束碼>（逾時是 exit=timeout），接著一行 [text] 與螢幕上每一列的文字，
 // 再來一行 [cells] 與每一列的佔格圖，每格一個字元：空白、W（全形字佔的格）、x（其他）。
@@ -68,7 +72,15 @@ func main() {
 	after := flag.String("after", "", "type once this text is on the screen")
 	timeout := flag.Int("timeout", 60, "seconds to wait for the program")
 	inside := flag.Bool("inside", false, "internal: already running in the hidden console")
+	suspend := flag.Uint("suspend", 0, "freeze the process with this id instead of running a program")
+	seconds := flag.Int("seconds", 30, "how long to freeze it")
 	flag.Parse()
+	if *suspend != 0 {
+		if err := freeze(uint32(*suspend), time.Duration(*seconds)*time.Second); err != nil {
+			fail(err)
+		}
+		return
+	}
 	if *out == "" || flag.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "usage: e2e-console -out file [-cp N] [-type keys] [-after text] -- program args…")
 		os.Exit(2)
@@ -91,6 +103,25 @@ func main() {
 		os.WriteFile(*out, []byte("exit=error\n"+err.Error()+"\n"), 0o644)
 		os.Exit(1)
 	}
+}
+
+// freeze 把一個行程的所有執行緒暫停一段時間，然後放開。
+func freeze(pid uint32, d time.Duration) error {
+	const processSuspendResume = 0x0800
+	h, err := windows.OpenProcess(processSuspendResume, false, pid)
+	if err != nil {
+		return fmt.Errorf("OpenProcess(%d): %w", pid, err)
+	}
+	defer windows.CloseHandle(h)
+	ntdll := windows.NewLazySystemDLL("ntdll.dll")
+	if status, _, _ := ntdll.NewProc("NtSuspendProcess").Call(uintptr(h)); status != 0 {
+		return fmt.Errorf("NtSuspendProcess: status %#x", status)
+	}
+	time.Sleep(d)
+	if status, _, _ := ntdll.NewProc("NtResumeProcess").Call(uintptr(h)); status != 0 {
+		return fmt.Errorf("NtResumeProcess: status %#x", status)
+	}
+	return nil
 }
 
 func fail(err error) {

@@ -6,6 +6,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Once a week as well: a vulnerability may be published for code that has not changed.
+  schedule:
+    - cron: '23 5 * * 2'
 
 permissions:
   contents: read
@@ -27,8 +30,33 @@ jobs:
       - name: The launcher starts the executable
         run: node bin/wslbak.js --version
 
+  # Formatting, static analysis, known vulnerabilities, and the shell scripts.
+  lint:
+    runs-on: ubuntu-latest
+    env:
+      GOOS: windows
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l . scripts)"
+      - name: staticcheck
+        run: GOOS=linux go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+        env:
+          GOFLAGS: ''
+      - name: govulncheck
+        run: GOOS=linux go install golang.org/x/vuln/cmd/govulncheck@v1.8.0 && "$(GOOS=linux go env GOPATH)/bin/govulncheck" ./...
+      - name: shellcheck
+        run: |
+          shellcheck --version | sed -n 2p
+          shellcheck -x -S warning scripts/*.sh
+          shellcheck -s sh -S warning backup.sh probe.sh check.sh caches.sh restorefiles.sh
+
   # The arm64 executables are cross-compiled on x64 above; here they run on real arm64
-  # hardware. Hosted arm64 runners cannot run WSL2, so this stops at what works without it.
+  # hardware (Windows 11). Hosted arm64 runners cannot run WSL2 (virtualization is not
+  # available in them; this was tried), so the job stops at what works without it.
   arm64:
     runs-on: windows-11-arm
     steps:
