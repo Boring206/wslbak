@@ -324,7 +324,7 @@ func cmdRestorePath(opts options) int {
 	switch {
 	case runErr != nil:
 		logf("restore --path: tar in %s failed: %v: %s", d.Name, runErr, tarOut.String())
-		problem = fmt.Errorf(T.PathFailed, firstLine(tarOut.String()))
+		problem = fmt.Errorf(T.PathFailed, plain(firstLine(tarOut.String())))
 	case walkErr != nil:
 		logf("restore --path: reading %s failed: %v", m.Archive, walkErr)
 		problem = fmt.Errorf(T.RestoreCorrupt, m.Archive)

@@ -409,7 +409,7 @@ func parseProbe(text string) (probeInfo, error) {
 	rows := parseProto(text)
 	var p probeInfo
 	if _, ok := protoValue(rows, "done"); !ok {
-		return p, errors.New(firstLine(text))
+		return p, errors.New(plain(firstLine(text)))
 	}
 	if f, ok := protoValue(rows, "tar"); ok && len(f) > 0 {
 		p.TarKind = f[0]

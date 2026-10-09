@@ -268,7 +268,7 @@ func runBackup(req backupRequest) (*manifest, error) {
 		if f, ok := protoValue(stderr.proto, "error"); ok && len(f) > 0 && f[0] == "not-gnu-tar" {
 			return nil, &backupError{failNotGNUTar, strings.Join(f[1:], " ")}
 		}
-		detail := firstLine(decodeWSLText(rest))
+		detail := plain(firstLine(decodeWSLText(rest)))
 		if len(stderr.tar) > 0 {
 			detail = stderr.tar[0]
 		}
