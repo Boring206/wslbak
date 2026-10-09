@@ -27,8 +27,6 @@ const (
 	envTestStallSeconds = "WSLBAK_TEST_STALL_SECONDS"
 	// 從 distro 讀資料的速度上限（MiB／秒），讓一次備份久到來得及在途中做別的事。
 	envTestReadRate = "WSLBAK_TEST_READ_MIB_PER_SECOND"
-	// 設成 1 時，排程第一次開始的時間可以落在過去，用來測試「錯過之後補跑」。
-	envTestPastStart = "WSLBAK_TEST_PAST_START"
 )
 
 // fullAfterWriter 讓前 left 個位元組照常寫入，之後回報磁碟已滿。
@@ -119,9 +117,4 @@ func withTestReadRate(r io.Reader) io.Reader {
 		return r
 	}
 	return &slowReader{r: r, perByte: time.Second / time.Duration(rate<<20)}
-}
-
-// pastStartAllowed：排程第一次開始的時間能不能落在過去。
-func pastStartAllowed() bool {
-	return homeOverride != "" && os.Getenv(envTestPastStart) == "1"
 }
