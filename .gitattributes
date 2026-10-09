@@ -1,0 +1,4 @@
+# 內嵌的 sh 腳本與啟動器的 shebang 不能是 CRLF。
+* text=auto eol=lf
+*.exe binary
+*.tar binary
