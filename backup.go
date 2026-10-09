@@ -284,7 +284,21 @@ func runBackup(req backupRequest) (*manifest, error) {
 	zw := pgzip.NewWriter(buffered)
 	// 每塊 1 MiB。區塊越大，同時在壓縮的區塊佔的記憶體越多；1 MiB 時大約是「執行緒數 × 幾 MiB」。
 	zw.SetConcurrency(1<<20, compressWorkers(req.Scheduled))
-	idx, scanErr := scanTar(io.TeeReader(progress, zw))
+	// 檔案索引和封存一起寫；寫不出來不影響備份本身，之後需要時可以再從封存建立。
+	indexPath := filepath.Join(req.Dir, id+indexSuffix)
+	index, indexErr := newIndexWriter(indexPath, id)
+	var onEntry func(indexEntry)
+	if indexErr == nil {
+		onEntry = index.add
+		defer func() {
+			if err := index.close(keep); err != nil {
+				logf("file index for %s: %v", id, err)
+			}
+		}()
+	} else {
+		logf("file index for %s: %v", id, indexErr)
+	}
+	idx, scanErr := scanTar(io.TeeReader(progress, zw), onEntry)
 	closeErr := zw.Close()
 	if err := buffered.Flush(); closeErr == nil {
 		closeErr = err
@@ -363,6 +377,8 @@ func runBackup(req backupRequest) (*manifest, error) {
 	if err := m.save(); err != nil {
 		// 沒有 manifest 的封存不算備份；把它刪掉，不要留一個沒人認得的大檔案。
 		os.Remove(m.archivePath())
+		// 讓收尾的那幾段把檔案索引也當成失敗來處理。
+		keep = false
 		return nil, &backupError{failWrite, err.Error()}
 	}
 	logf("backup %s written: tar %d bytes, archive %d bytes, %d entries, %d warnings, %.0fs",

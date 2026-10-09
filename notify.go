@@ -69,6 +69,7 @@ func toast(title, body string) error {
 		"WSLBAK_TOAST_TITLE="+title, "WSLBAK_TOAST_BODY="+body, "WSLBAK_TOAST_APPID="+toastAppID)
 	cmd.Stdin = strings.NewReader(toastScript)
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
+	cmd.WaitDelay = waitDelay
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("powershell: %w: %s", err, strings.TrimSpace(string(out)))

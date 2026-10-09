@@ -64,7 +64,7 @@ func sampleEntries() []testEntry {
 
 func TestScanTar(t *testing.T) {
 	data, end := buildTar(t, sampleEntries())
-	idx, err := scanTar(bytes.NewReader(data))
+	idx, err := scanTar(bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestScanTarEtcNotADirectory(t *testing.T) {
 		{name: "./", kind: tar.TypeDir},
 		{name: "./etc", kind: tar.TypeSymlink, link: "private/etc"},
 	})
-	idx, err := scanTar(bytes.NewReader(data))
+	idx, err := scanTar(bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestScanTarBadInput(t *testing.T) {
 	// 結尾標記之後有不是零的資料。
 	dirty := bytes.Clone(data)
 	dirty[len(dirty)-1] = 1
-	idx, err := scanTar(bytes.NewReader(dirty))
+	idx, err := scanTar(bytes.NewReader(dirty), nil)
 	if !errors.Is(err, errTrailingData) {
 		t.Errorf("trailing data: err = %v", err)
 	}
@@ -132,7 +132,7 @@ func TestScanTarBadInput(t *testing.T) {
 
 	// 從中間被截斷：要回報錯誤，而且仍然把資料讀完（Size 等於實際長度）。
 	cut := data[:end-700]
-	idx, err = scanTar(bytes.NewReader(cut))
+	idx, err = scanTar(bytes.NewReader(cut), nil)
 	if err == nil {
 		t.Error("truncated archive: expected an error")
 	}
@@ -142,7 +142,7 @@ func TestScanTarBadInput(t *testing.T) {
 
 	// 根本不是 tar。
 	junk := bytes.Repeat([]byte("not a tar archive "), 100)
-	idx, err = scanTar(bytes.NewReader(junk))
+	idx, err = scanTar(bytes.NewReader(junk), nil)
 	if err == nil {
 		t.Error("junk: expected an error")
 	}
@@ -230,7 +230,7 @@ func TestScanRealGNUTar(t *testing.T) {
 	count, _ := os.ReadFile("testdata/gnu.entries")
 	entries, _ := strconv.ParseInt(strings.TrimSpace(string(count)), 10, 64)
 
-	idx, err := scanTar(bytes.NewReader(data))
+	idx, err := scanTar(bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

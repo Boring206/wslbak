@@ -271,6 +271,87 @@ type catalog struct {
 	UninstallDone      string
 	AskRemoveConfig    string // 資料夾
 
+	BadCount            string // 值
+	BadNotify           string // 值
+	BadVerify           string // 值
+	BadPattern          string // 值
+	FlagConflict        string // 旗標, 旗標
+	KeepWeeklyMore      string // 週數
+	KeepMonthlyMore     string // 月數
+	ConfigVerifyOn      string
+	ConfigVerifyOff     string
+	ConfigNotifyFailure string // 管道
+	ConfigNotifyAlways  string // 管道
+	ConfigKeep          string // 規則
+	ConfigExcludes      string // 清單
+	ConfigChanged       string // 旗標, 舊值, 新值
+	ConfigNone          string
+	ConfigNoChange      string
+	ConfigSaved         string
+	ConfigTaskUpdated   string // 時間
+	ExcludeBuiltin      string // 樣式
+	InitSkipped         string // distro, 原因
+	AskPick             string
+	WhichDistroOrAll    string // 清單
+
+	DoctorOK            string
+	DoctorLabels        [3]string
+	DocSectionWSL       string
+	DocSectionDistros   string
+	DocSectionWindows   string
+	DocSectionSchedule  string
+	DocSectionBackups   string
+	DocSectionSpace     string
+	DocWSL              string // 版本
+	DocDistroOK         string // 名稱, 系統, 已使用
+	DocDistroSkip       string // 名稱, 原因
+	DocDistroNotRunning string // 名稱
+	DocTarBad           string // 名稱
+	DocTarFix           string
+	DocNoSHA            string // 名稱
+	DocNoSHAFix         string
+	DocSACOn            string
+	DocSACFix           string
+	DocSACEval          string
+	DocSACOff           string
+	DocCFAOn            string
+	DocCFAFix           string
+	DocCFAOff           string
+	DocVerifyAttr       string // 資料夾
+	DocVerifyAttrFix    string
+	DocInstalled        string // 資料夾
+	DocDestOK           string // 資料夾, 磁碟, 可用空間
+	DocDestMissing      string // 資料夾
+	DocDestMissingFix   string
+	DocDestLow          string // 磁碟, 可用空間, 需要
+	DocLastOK           string // 名稱, 多久以前
+	DocLastNever        string // 名稱
+	DocLastStale        string // 名稱, 多久以前
+	DocStaleFix         string
+	DocLastProblem      string // 名稱, 訊息
+	DocSeeLog           string // 路徑
+	DocCache            string // distro, 大小, 路徑
+	DocCacheFix         string // distro, 樣式
+	DocDocker           string // distro, 大小
+	DocNoCaches         string
+	DocSummaryOK        string
+	DocSummaryWarn      string // 數量
+	DocSummaryFail      string // 數量
+
+	RunPruneSkipped string
+
+	BadPath            string // 路徑
+	FilesBuildingIndex string
+	FilesNoIndex       string // 編號, err
+	FilesTitle         string // 編號, distro, 路徑
+	FilesNotFound      string // 路徑, 編號
+	FilesFindNone      string // 文字, 編號
+
+	WarmUpFailed    string // 路徑
+	WarmUpSlow      string // 耗時
+	DocAntivirus    string // 名稱
+	DocAntivirusFix string // 資料夾
+
 	// 放在備份資料夾裡的說明檔；兩種語言都會寫進去。
 	RestoreReadme string
 }
@@ -280,28 +361,40 @@ var zhTW = catalog{
 
 指令：
   init             設定備份：選 distro、目的地、保留份數，並建立每日排程
+  config           顯示目前的設定；加上選項則修改設定
   run              立刻備份一次（備份後自動試還原，再清掉過舊的備份）
   list             列出現有的備份
+  files [編號] [路徑]  列出備份裡某個資料夾的內容（預設是最新一份的根目錄）
   status           顯示排程、上次結果，以及已安裝的執行檔是否完好
+  doctor           逐項檢查環境與設定，找出備份跑不起來的原因與修法
   verify [編號]    對既有的備份重新試還原（預設是最新一份）
   restore [編號]   把備份還原成新的 distro（預設是最新一份；不會覆蓋既有的 distro）
   uninstall        移除排程與已安裝的執行檔；備份不會被刪除
 
 選項：
-  -d, --distro <名稱>    指定 distro（預設是唯一可備份的那個）
-      --dest <資料夾>    init：備份要放在哪裡
-      --keep <份數>      init：保留最近幾份已驗證的備份（預設 7）
-      --at <HH:MM>       init：每天幾點備份（預設 03:00）
-      --webhook <網址>   init：失敗時另外通知這個網址（ntfy、Discord、Slack）
-      --no-verify        run：這次不試還原
-      --name <名稱>      restore：還原出來的 distro 要叫什麼
-      --to <資料夾>      restore：還原出來的 distro 要放在哪裡
-  -n, --dry-run          只列出會做什麼，不實際執行
-  -y, --yes              不詢問直接進行
-      --lang <語言>      介面語言：en 或 zh-TW（也可以設定環境變數 WSLBAK_LANG）
-      --debug            顯示每個步驟的細節與耗時
-  -h, --help             顯示這份說明
-  -v, --version          顯示版本
+  -d, --distro <名稱>      指定 distro（預設是唯一可備份的那個）
+      --all                init：一次設定所有可備份的 distro
+      --dest <資料夾>      init：備份要放在哪裡
+      --keep <份數>        init、config：保留最新幾份已驗證的備份（預設 7）
+      --keep-weekly <週>   init、config：另外每週留一份，留幾週（預設 0）
+      --keep-monthly <月>  init、config：另外每月留一份，留幾個月（預設 0）
+      --at <HH:MM>         init、config：每天幾點備份（預設 03:00）
+      --webhook <網址>     init、config：失敗時另外通知這個網址（ntfy、Discord、Slack）；config 可用 off 取消
+      --notify <時機>      config：failure 只在失敗時通知，always 每次都通知
+      --verify <方式>      config：restore 每次備份後試還原，none 不做
+      --exclude <樣式>     config：多排除一個路徑樣式，例如 /home/*/Downloads/*（可重複）
+      --unexclude <樣式>   config：取消一個排除（可重複）
+      --enable, --disable  config：啟用或停用某個 distro 的備份
+      --no-verify          run：這次不試還原
+      --find <文字>        files：列出檔名或路徑包含這段文字的項目
+      --name <名稱>        restore：還原出來的 distro 要叫什麼
+      --to <資料夾>        restore：還原出來的 distro 要放在哪裡
+  -n, --dry-run            只列出會做什麼，不實際執行
+  -y, --yes                不詢問直接進行
+      --lang <語言>        介面語言：en 或 zh-TW（也可以設定環境變數 WSLBAK_LANG）
+      --debug              顯示每個步驟的細節與耗時
+  -h, --help               顯示這份說明
+  -v, --version            顯示版本
 
 結束碼：0 成功；1 備份已寫入但未驗證，或備份已過期；2 失敗；3 已有另一個 wslbak 在執行
 `,
@@ -452,6 +545,82 @@ var zhTW = catalog{
 	UninstallDone:         "已移除排程與程式。備份都還在。",
 	AskRemoveConfig:       "也要刪除設定與紀錄（%s）嗎？[y/N] ",
 
+	BadCount:            "份數要是 0 以上的整數：%s",
+	BadNotify:           "--notify 只能是 failure 或 always：%s",
+	BadVerify:           "--verify 只能是 restore 或 none：%s",
+	BadPattern:          "排除樣式要寫成 distro 裡的絕對路徑，例如 /home/*/Downloads/*：%s",
+	FlagConflict:        "%[1]s 和 %[2]s 不能同時使用",
+	KeepWeeklyMore:      "，另外每週一份、留 %d 週",
+	KeepMonthlyMore:     "，每月一份、留 %d 個月",
+	ConfigVerifyOn:      "試還原：每次備份後",
+	ConfigVerifyOff:     "試還原：不做",
+	ConfigNotifyFailure: "通知：失敗時（%s）",
+	ConfigNotifyAlways:  "通知：每次備份後（%s）",
+	ConfigKeep:          "保留：%s",
+	ConfigExcludes:      "排除：%s",
+	ConfigChanged:       "%[1]s：%[2]s → %[3]s",
+	ConfigNone:          "（無）",
+	ConfigNoChange:      "設定沒有變動。",
+	ConfigSaved:         "已儲存。",
+	ConfigTaskUpdated:   "排程工作已改成每天 %s。",
+	ExcludeBuiltin:      "%s 一律排除，不能取消。",
+	InitSkipped:         "跳過 %[1]s：%[2]s",
+	AskPick:             "要設定哪一個？輸入編號，或輸入 a 全部設定：",
+	WhichDistroOrAll:    "有不只一個 distro：用 -d 指定其中一個，或用 --all 全部設定：%s",
+	DoctorOK:            "正常",
+	DoctorLabels:        [3]string{"資訊", "注意", "有問題"},
+	DocSectionWSL:       "WSL",
+	DocSectionDistros:   "Distro",
+	DocSectionWindows:   "這台電腦的設定",
+	DocSectionSchedule:  "排程與程式",
+	DocSectionBackups:   "備份",
+	DocSectionSpace:     "可以省空間的地方",
+	DocWSL:              "WSL %s（Microsoft Store 版）",
+	DocDistroOK:         "%[1]s：可以備份（%[2]s，已使用 %[3]s）",
+	DocDistroSkip:       "%[1]s：不備份，%[2]s",
+	DocDistroNotRunning: "%s：可以備份；目前沒有在執行，所以沒有進去檢查",
+	DocTarBad:           "%s：裡面的 tar 不是 GNU tar",
+	DocTarFix:           "在那個 distro 裡安裝 GNU tar。Alpine：apk add tar",
+	DocNoSHA:            "%s：裡面沒有 sha256sum，試還原時無法比對檔案內容",
+	DocNoSHAFix:         "在那個 distro 裡安裝 coreutils",
+	DocSACOn:            "智慧型應用程式控制是開啟的：沒有簽章的程式會被擋下，排程的備份無法執行",
+	DocSACFix:           "wslbak 的執行檔沒有程式碼簽章。要用的話，只能在「Windows 安全性 → 應用程式與瀏覽器控制」關閉智慧型應用程式控制；關閉之後無法再開啟。",
+	DocSACEval:          "智慧型應用程式控制在評估模式：Windows 之後可能自行開啟它，到時沒有簽章的 wslbak 會被擋下",
+	DocSACOff:           "智慧型應用程式控制沒有開啟",
+	DocCFAOn:            "受控資料夾存取是開啟的",
+	DocCFAFix:           "備份資料夾如果在受保護的位置（例如「文件」），要在「Windows 安全性 → 勒索軟體防護」允許 wslbak.exe 與 wslbakw.exe",
+	DocCFAOff:           "受控資料夾存取沒有開啟",
+	DocVerifyAttr:       "%s 設了壓縮或加密，wsl --import 可能無法在裡面建立虛擬磁碟",
+	DocVerifyAttrFix:    "在檔案總管的「內容 → 進階」取消這個資料夾的壓縮與加密",
+	DocInstalled:        "排程用的程式在 %s，檔案完好",
+	DocDestOK:           "%[1]s 可以使用，%[2]s 還有 %[3]s",
+	DocDestMissing:      "連不到 %s",
+	DocDestMissingFix:   "如果是外接碟或網路磁碟，接上之後再試",
+	DocDestLow:          "%[1]s 只剩 %[2]s，下一份備份大約需要 %[3]s",
+	DocLastOK:           "%[1]s：上次成功是 %[2]s",
+	DocLastNever:        "%s：還沒有成功備份過",
+	DocLastStale:        "%[1]s：備份過期了，上次成功是 %[2]s",
+	DocStaleFix:         "確認電腦在排定的時間是開著而且有登入；也可以手動執行 wslbak run",
+	DocLastProblem:      "%[1]s：最近一次的問題：%[2]s",
+	DocSeeLog:           "細節在紀錄檔：%s",
+	DocCache:            "%[1]s：%[3]s 佔了 %[2]s，是可以重新下載的快取",
+	DocCacheFix:         "不想備份它的話：wslbak config -d %[1]s --exclude \"%[2]s\"",
+	DocDocker:           "%[1]s：Docker 的資料（/var/lib/docker）佔了 %[2]s。映像可以重新下載，但 volume 裡的資料不行，要不要排除請自行判斷",
+	DocNoCaches:         "沒有發現值得排除的大型快取",
+	DocSummaryOK:        "沒有發現問題。",
+	DocSummaryWarn:      "有 %d 項要注意。",
+	DocSummaryFail:      "有 %d 項問題要處理。",
+	RunPruneSkipped:     "這個資料夾裡有較新版本的 wslbak 寫的備份，這次沒有刪除任何舊備份。",
+	BadPath:             "路徑要寫成 distro 裡的位置（例如 /home/me/project），而且不能有 ..：%s",
+	FilesBuildingIndex:  "這份備份還沒有檔案索引，正在掃描備份檔來建立（只需要做一次）…",
+	FilesNoIndex:        "無法讀取備份 %[1]s 的內容：%[2]v",
+	FilesTitle:          "備份 %[1]s（%[2]s）裡的 %[3]s",
+	FilesNotFound:       "%[1]s 不在備份 %[2]s 裡。用 wslbak files --find <文字> 可以搜尋。",
+	FilesFindNone:       "備份 %[2]s 裡沒有名稱包含「%[1]s」的項目。",
+	WarmUpFailed:        "剛安裝的程式啟動不了：%s\n它可能被防毒軟體擋下或隔離了。請在防毒軟體裡放行這個檔案（或把它所在的資料夾加入例外），再執行一次 wslbak init。",
+	WarmUpSlow:          "防毒軟體花了 %s 檢查新安裝的程式；這只會發生在每個新版本第一次執行時。",
+	DocAntivirus:        "啟用中的防毒軟體：%s。新版的 wslbak 第一次執行時可能被它扣住檢查，甚至關進沙箱。",
+	DocAntivirusFix:     "排程的備份如果一直沒有執行，把 %s 加入防毒軟體的例外清單",
 	RestoreReadme: `這個資料夾是 wslbak 做的 WSL 備份（https://github.com/Boring206/wslbak）
 
 每個子資料夾是一個 distro。一份備份有兩個檔案：
@@ -484,28 +653,40 @@ var enUS = catalog{
 
 Commands:
   init             Set up backups: pick the distro, destination and how many to keep, and create a daily task
+  config           Show the current settings; with options, change them
   run              Back up now (then test-restore the backup and prune old ones)
   list             List existing backups
+  files [id] [path]  List what a backup holds in a folder (default: the root of the newest backup)
   status           Show the schedule, the last result, and whether the installed program is intact
+  doctor           Check the environment and settings one by one, with a fix for whatever would stop backups
   verify [id]      Test-restore an existing backup again (default: the newest)
   restore [id]     Restore a backup as a new distro (default: the newest; never overwrites a distro)
   uninstall        Remove the scheduled task and the installed program; backups are kept
 
 Options:
-  -d, --distro <name>    Which distro (default: the only one that can be backed up)
-      --dest <folder>    init: where to store backups
-      --keep <count>     init: how many verified backups to keep (default 7)
-      --at <HH:MM>       init: time of the daily backup (default 03:00)
-      --webhook <url>    init: also report failures to this URL (ntfy, Discord, Slack)
-      --no-verify        run: skip the test restore this time
-      --name <name>      restore: name of the restored distro
-      --to <folder>      restore: where to put the restored distro
-  -n, --dry-run          Only show what would be done
-  -y, --yes              Do not ask for confirmation
-      --lang <language>  Interface language: en or zh-TW (or set WSLBAK_LANG)
-      --debug            Show details and timing of each step
-  -h, --help             Show this help
-  -v, --version          Show the version
+  -d, --distro <name>        Which distro (default: the only one that can be backed up)
+      --all                  init: set up every distro that can be backed up
+      --dest <folder>        init: where to store backups
+      --keep <count>         init, config: how many of the newest verified backups to keep (default 7)
+      --keep-weekly <weeks>  init, config: also keep one per week, for this many weeks (default 0)
+      --keep-monthly <months>  init, config: also keep one per month, for this many months (default 0)
+      --at <HH:MM>           init, config: time of the daily backup (default 03:00)
+      --webhook <url>        init, config: also report failures to this URL (ntfy, Discord, Slack); off removes it
+      --notify <when>        config: failure notifies only on failure, always after every backup
+      --verify <how>         config: restore test-restores every backup, none turns that off
+      --exclude <pattern>    config: exclude one more path pattern, such as /home/*/Downloads/* (repeatable)
+      --unexclude <pattern>  config: stop excluding a pattern (repeatable)
+      --enable, --disable    config: turn backups of one distro on or off
+      --no-verify            run: skip the test restore this time
+      --find <text>          files: list entries whose name or path contains this text
+      --name <name>          restore: name of the restored distro
+      --to <folder>          restore: where to put the restored distro
+  -n, --dry-run              Only show what would be done
+  -y, --yes                  Do not ask for confirmation
+      --lang <language>      Interface language: en or zh-TW (or set WSLBAK_LANG)
+      --debug                Show details and timing of each step
+  -h, --help                 Show this help
+  -v, --version              Show the version
 
 Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 2 failure; 3 another wslbak is running
 `,
@@ -656,6 +837,82 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	UninstallDone:         "The scheduled task and the program were removed. All backups are still there.",
 	AskRemoveConfig:       "Also delete the settings and logs (%s)? [y/N] ",
 
+	BadCount:            "the count must be a whole number of 0 or more: %s",
+	BadNotify:           "--notify must be failure or always: %s",
+	BadVerify:           "--verify must be restore or none: %s",
+	BadPattern:          "an exclude pattern must be an absolute path inside the distro, such as /home/*/Downloads/*: %s",
+	FlagConflict:        "%[1]s and %[2]s cannot be used together",
+	KeepWeeklyMore:      ", plus one per week for %d weeks",
+	KeepMonthlyMore:     ", plus one per month for %d months",
+	ConfigVerifyOn:      "Test restore: after every backup",
+	ConfigVerifyOff:     "Test restore: off",
+	ConfigNotifyFailure: "Notify: on failure (%s)",
+	ConfigNotifyAlways:  "Notify: after every backup (%s)",
+	ConfigKeep:          "Keep: %s",
+	ConfigExcludes:      "Excluded: %s",
+	ConfigChanged:       "%[1]s: %[2]s → %[3]s",
+	ConfigNone:          "(none)",
+	ConfigNoChange:      "Nothing changed.",
+	ConfigSaved:         "Saved.",
+	ConfigTaskUpdated:   "The scheduled task now runs every day at %s.",
+	ExcludeBuiltin:      "%s is always excluded and cannot be removed.",
+	InitSkipped:         "Skipping %[1]s: %[2]s",
+	AskPick:             "Which one? Enter a number, or a for all of them: ",
+	WhichDistroOrAll:    "There is more than one distro: choose one with -d, or use --all for all of them: %s",
+	DoctorOK:            "ok",
+	DoctorLabels:        [3]string{"info", "warning", "problem"},
+	DocSectionWSL:       "WSL",
+	DocSectionDistros:   "Distros",
+	DocSectionWindows:   "This PC",
+	DocSectionSchedule:  "Schedule and program",
+	DocSectionBackups:   "Backups",
+	DocSectionSpace:     "Ways to save space",
+	DocWSL:              "WSL %s (Microsoft Store version)",
+	DocDistroOK:         "%[1]s: can be backed up (%[2]s, %[3]s used)",
+	DocDistroSkip:       "%[1]s: not backed up, %[2]s",
+	DocDistroNotRunning: "%s: can be backed up; it is not running, so it was not checked further",
+	DocTarBad:           "%s: its tar is not GNU tar",
+	DocTarFix:           "Install GNU tar inside that distro. On Alpine: apk add tar",
+	DocNoSHA:            "%s: it has no sha256sum, so a test restore cannot compare file contents",
+	DocNoSHAFix:         "Install coreutils inside that distro",
+	DocSACOn:            "Smart App Control is on: unsigned programs are blocked, so the scheduled backup cannot run",
+	DocSACFix:           "wslbak's executables are not code-signed. To use it, Smart App Control has to be turned off in Windows Security → App & browser control; once off, it cannot be turned back on.",
+	DocSACEval:          "Smart App Control is in evaluation mode: Windows may turn it on by itself later, and the unsigned wslbak would then be blocked",
+	DocSACOff:           "Smart App Control is off",
+	DocCFAOn:            "Controlled folder access is on",
+	DocCFAFix:           "If the backup folder is in a protected place (such as Documents), allow wslbak.exe and wslbakw.exe in Windows Security → Ransomware protection",
+	DocCFAOff:           "Controlled folder access is off",
+	DocVerifyAttr:       "%s is compressed or encrypted; wsl --import may be unable to create a virtual disk there",
+	DocVerifyAttrFix:    "Turn compression and encryption off for that folder in Explorer: Properties → Advanced",
+	DocInstalled:        "The program the schedule runs is in %s and is intact",
+	DocDestOK:           "%[1]s is usable; %[2]s has %[3]s free",
+	DocDestMissing:      "%s cannot be reached",
+	DocDestMissingFix:   "If it is on an external or network drive, connect it and try again",
+	DocDestLow:          "%[1]s has only %[2]s free; the next backup needs about %[3]s",
+	DocLastOK:           "%[1]s: the last success was %[2]s",
+	DocLastNever:        "%s: no backup has succeeded yet",
+	DocLastStale:        "%[1]s: backups are stale; the last success was %[2]s",
+	DocStaleFix:         "Check that the PC is on and signed in at the scheduled time; you can also run wslbak run by hand",
+	DocLastProblem:      "%[1]s: problem in the latest run: %[2]s",
+	DocSeeLog:           "Details are in the log file: %s",
+	DocCache:            "%[1]s: %[3]s takes %[2]s and is a cache that can be downloaded again",
+	DocCacheFix:         "To leave it out of backups: wslbak config -d %[1]s --exclude \"%[2]s\"",
+	DocDocker:           "%[1]s: Docker's data (/var/lib/docker) takes %[2]s. Images can be pulled again, but data in volumes cannot; whether to exclude it is your call",
+	DocNoCaches:         "No large caches worth excluding were found",
+	DocSummaryOK:        "No problems found.",
+	DocSummaryWarn:      "%d item(s) need attention.",
+	DocSummaryFail:      "%d problem(s) need fixing.",
+	RunPruneSkipped:     "This folder holds backups written by a newer wslbak, so no old backups were deleted this time.",
+	BadPath:             "a path must be a location inside the distro (such as /home/me/project) and must not contain ..: %s",
+	FilesBuildingIndex:  "This backup has no file index yet; scanning the archive to build one (needed only once)…",
+	FilesNoIndex:        "Could not read the contents of backup %[1]s: %[2]v",
+	FilesTitle:          "%[3]s in backup %[1]s (%[2]s)",
+	FilesNotFound:       "%[1]s is not in backup %[2]s. Use wslbak files --find <text> to search.",
+	FilesFindNone:       "Nothing in backup %[2]s has \"%[1]s\" in its name.",
+	WarmUpFailed:        "The program that was just installed does not start: %s\nAntivirus software may have blocked or quarantined it. Allow the file in your antivirus (or add its folder as an exception), then run wslbak init again.",
+	WarmUpSlow:          "Antivirus software took %s to check the newly installed program; this happens only the first time each new version runs.",
+	DocAntivirus:        "Active antivirus: %s. It may hold a new version of wslbak for checking the first time it runs, or even run it in a sandbox.",
+	DocAntivirusFix:     "If scheduled backups never run, add %s to the antivirus exceptions",
 	RestoreReadme: `WSL backups made by wslbak (https://github.com/Boring206/wslbak)
 
 Each subfolder is one distro. A backup is two files:

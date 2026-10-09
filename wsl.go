@@ -31,11 +31,19 @@ var checkScript string
 //go:embed probe.sh
 var probeScript string
 
+//go:embed caches.sh
+var cachesScript string
+
 // protoPrefix 是腳本寫到 stderr 的診斷行開頭；沒有這個前綴的行是工具自己的訊息。
 const protoPrefix = "@wslbak\t"
 
 // createNoWindow 讓子行程不要另開主控台視窗（從 WSL 經管線啟動時我們自己沒有主控台）。
 const createNoWindow = 0x08000000
+
+// waitDelay：逾時把子行程結束掉之後，最多再等這麼久就不等它的輸出了。
+// 少了這個，子行程留下的孫行程只要還握著管線，我們就會永遠等下去
+// （實際遇過：防毒軟體把程式關進沙箱時，wsl.exe 的呼叫就是這樣卡住的）。
+const waitDelay = 5 * time.Second
 
 type distroInfo struct {
 	Name    string
@@ -95,6 +103,7 @@ func runSystem(ctx context.Context, stdin string, exe string, args ...string) ([
 	cmd.Env = append(os.Environ(), "WSL_UTF8=1")
 	cmd.Stdin = strings.NewReader(stdin)
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
+	cmd.WaitDelay = waitDelay
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -277,6 +286,7 @@ func importDistro(ctx context.Context, name, dir, source string, stdin io.Reader
 	cmd.Env = append(os.Environ(), "WSL_UTF8=1")
 	cmd.Stdin = stdin
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
+	cmd.WaitDelay = waitDelay
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out

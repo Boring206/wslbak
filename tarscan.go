@@ -85,10 +85,10 @@ func isZero(p []byte) bool {
 	return true
 }
 
-// scanTar 把 r 讀到底並回傳索引。
+// scanTar 把 r 讀到底並回傳索引。每遇到一個項目就呼叫一次 sink（可以是 nil）。
 // 解析失敗時仍然會把剩下的資料讀完（上游的備份不能因為掃描器看不懂而中斷），
 // 這時回傳的錯誤不是 nil，索引只有 Size 可信。
-func scanTar(r io.Reader) (tarIndex, error) {
+func scanTar(r io.Reader, sink func(indexEntry)) (tarIndex, error) {
 	var idx tarIndex
 	src := &countingReader{r: r}
 	tr := tar.NewReader(src)
@@ -105,6 +105,9 @@ func scanTar(r io.Reader) (tarIndex, error) {
 			break
 		}
 		idx.Entries++
+		if sink != nil {
+			sink(entryFromHeader(h))
+		}
 		if h.Typeflag == tar.TypeDir && strings.TrimSuffix(h.Name, "/") == "./etc" {
 			idx.EtcIsDir = true
 		}

@@ -4,10 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/xml"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -108,7 +112,11 @@ func TestShellQuoting(t *testing.T) {
 // 內嵌的腳本要整個包在 main 裡，最後一行才呼叫：腳本是從 stdin 讀的，
 // 中間的指令如果去讀 stdin，會把腳本的後半段吃掉。也不能帶 CR。
 func TestScriptsShape(t *testing.T) {
-	for name, script := range map[string]string{"backup.sh": backupScript, "check.sh": checkScript, "probe.sh": probeScript} {
+	for name, script := range map[string]string{"backup.sh": backupScript, "check.sh": checkScript, "probe.sh": probeScript, "caches.sh": cachesScript} {
+		// 內嵌的腳本是在使用者的 distro 裡以 root 執行的，不可以有遞迴刪除。
+		if regexp.MustCompile(`\brm\s+-[a-zA-Z]*[rR]`).MatchString(script) {
+			t.Errorf("%s contains a recursive rm", name)
+		}
 		if strings.Contains(script, "\r") {
 			t.Errorf("%s contains a carriage return", name)
 		}
@@ -248,32 +256,131 @@ func ids(list []*manifest) string {
 	return strings.Join(out, " ")
 }
 
-func TestPlanPrune(t *testing.T) {
+func TestPlanRetention(t *testing.T) {
 	// 編號越大越新。v = 通過試還原，u = 沒通過。
 	v, u := true, false
+	last := func(n int) retention { return retention{Last: n} }
 	cases := []struct {
 		label   string
 		backups []*manifest
-		keep    int
+		pol     retention
 		verify  string
 		want    string
 	}{
-		{"nothing to do", []*manifest{backup("1", v), backup("2", v)}, 3, verifyRestore, ""},
-		{"oldest verified go first", []*manifest{backup("1", v), backup("2", v), backup("3", v), backup("4", v)}, 2, verifyRestore, "2 1"},
+		{"nothing to do", []*manifest{backup("1", v), backup("2", v)}, last(3), verifyRestore, ""},
+		{"oldest verified go first", []*manifest{backup("1", v), backup("2", v), backup("3", v), backup("4", v)}, last(2), verifyRestore, "2 1"},
 		// 連續失敗不會把好的備份擠掉：失敗的自己另外算，最多留兩份。
-		{"failures do not push out good backups", []*manifest{backup("1", v), backup("2", u), backup("3", u), backup("4", u)}, 1, verifyRestore, "2"},
-		{"the newest verified one survives any number of failures", []*manifest{backup("1", v), backup("2", u), backup("3", u), backup("4", u), backup("5", u)}, 1, verifyRestore, "3 2"},
-		{"only unverified backups", []*manifest{backup("1", u), backup("2", u), backup("3", u)}, 5, verifyRestore, "1"},
-		{"keep below one is treated as one", []*manifest{backup("1", v), backup("2", v)}, 0, verifyRestore, "1"},
-		// 關掉試還原時不分通過與否，留最新的 keep 份。
-		{"verification turned off", []*manifest{backup("1", u), backup("2", v), backup("3", u), backup("4", u)}, 2, verifyNone, "2 1"},
-		{"unsorted input", []*manifest{backup("3", v), backup("1", v), backup("2", v)}, 1, verifyRestore, "2 1"},
-		{"empty", nil, 3, verifyRestore, ""},
+		{"failures do not push out good backups", []*manifest{backup("1", v), backup("2", u), backup("3", u), backup("4", u)}, last(1), verifyRestore, "2"},
+		{"the newest verified one survives any number of failures", []*manifest{backup("1", v), backup("2", u), backup("3", u), backup("4", u), backup("5", u)}, last(1), verifyRestore, "3 2"},
+		{"only unverified backups", []*manifest{backup("1", u), backup("2", u), backup("3", u)}, last(5), verifyRestore, "1"},
+		{"keep below one is treated as one", []*manifest{backup("1", v), backup("2", v)}, last(0), verifyRestore, "1"},
+		// 關掉試還原時不分通過與否，留最新的幾份。
+		{"verification turned off", []*manifest{backup("1", u), backup("2", v), backup("3", u), backup("4", u)}, last(2), verifyNone, "2 1"},
+		{"unsorted input", []*manifest{backup("3", v), backup("1", v), backup("2", v)}, last(1), verifyRestore, "2 1"},
+		{"empty", nil, last(3), verifyRestore, ""},
 	}
 	for _, c := range cases {
-		if got := ids(planPrune(c.backups, c.keep, c.verify)); got != c.want {
+		if got := ids(planRetention(c.backups, c.pol, c.verify)); got != c.want {
 			t.Errorf("%s: would delete %q, want %q", c.label, got, c.want)
 		}
+	}
+}
+
+// 每天 03:00（UTC）一份，從 from 往回 days 天。
+func daily(from time.Time, days int) []*manifest {
+	var list []*manifest
+	for i := 0; i < days; i++ {
+		list = append(list, backup(from.AddDate(0, 0, -i).Format(idLayout), true))
+	}
+	return list
+}
+
+func TestPlanRetentionWeeklyMonthly(t *testing.T) {
+	// 2026-10-09 是星期五。
+	today := time.Date(2026, 10, 9, 3, 0, 0, 0, time.UTC)
+	kept := func(all, doomed []*manifest) []string {
+		gone := map[string]bool{}
+		for _, m := range doomed {
+			gone[m.ID] = true
+		}
+		var out []string
+		for _, m := range all {
+			if !gone[m.ID] {
+				out = append(out, m.ID[:8])
+			}
+		}
+		sort.Sort(sort.Reverse(sort.StringSlice(out)))
+		return out
+	}
+	all := daily(today, 100)
+
+	// 最新 3 份，加上最近 4 個有備份的週各一份（每週最新的那一份）。
+	// 這一週最新的就是今天，已經在「最新 3 份」裡；往前三週各取星期日那一份。
+	got := kept(all, planRetention(all, retention{Last: 3, Weekly: 4}, verifyRestore))
+	want := []string{"20261009", "20261008", "20261007", "20261004", "20260927", "20260920"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("weekly: kept %v, want %v", got, want)
+	}
+
+	// 每月：最近 3 個月各留最新的一份。
+	got = kept(all, planRetention(all, retention{Last: 1, Monthly: 3}, verifyRestore))
+	want = []string{"20261009", "20260930", "20260831"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("monthly: kept %v, want %v", got, want)
+	}
+
+	// 三種規則一起用：同一份可以同時滿足好幾條，不會重複計算。
+	got = kept(all, planRetention(all, retention{Last: 2, Weekly: 2, Monthly: 2}, verifyRestore))
+	want = []string{"20261009", "20261008", "20261004", "20260930"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("combined: kept %v, want %v", got, want)
+	}
+
+	// 沒有備份的週不佔名額：電腦關了三週之後，每週的名額仍然用在有備份的週上。
+	gap := append(daily(today, 2), daily(today.AddDate(0, 0, -30), 20)...)
+	got = kept(gap, planRetention(gap, retention{Last: 1, Weekly: 3}, verifyRestore))
+	want = []string{"20261009", "20260909", "20260906"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("gap: kept %v, want %v", got, want)
+	}
+
+	// 沒通過試還原的不能拿來當每週或每月的那一份。
+	mixed := daily(today, 20)
+	for _, m := range mixed {
+		if m.ID[:8] == "20261004" {
+			m.Verify = nil
+		}
+	}
+	got = kept(mixed, planRetention(mixed, retention{Last: 1, Weekly: 2}, verifyRestore))
+	want = []string{"20261009", "20261004", "20261003"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("unverified weekly candidate: kept %v, want %v", got, want)
+	}
+
+	// 不管規則怎麼設，最新一份好的永遠留著。
+	for _, pol := range []retention{{}, {Last: 1}, {Weekly: 5}, {Monthly: 5}} {
+		doomed := planRetention(all, pol, verifyRestore)
+		for _, m := range doomed {
+			if m.ID == all[0].ID {
+				t.Errorf("%+v would delete the newest verified backup", pol)
+			}
+		}
+	}
+}
+
+func TestNewerManifests(t *testing.T) {
+	dir := t.TempDir()
+	if newerManifests(dir) {
+		t.Error("an empty folder has no newer manifests")
+	}
+	os.WriteFile(filepath.Join(dir, "20261001T030000Z.json"), []byte(`{"schema": 1}`), 0o644)
+	os.WriteFile(filepath.Join(dir, "notes.json"), []byte(`{"schema": 99}`), 0o644)
+	if newerManifests(dir) {
+		t.Error("a file that is not named like a backup must be ignored")
+	}
+	os.WriteFile(filepath.Join(dir, "20261002T030000Z.json"), []byte(`{"schema": 2, "kind": "diff"}`), 0o644)
+	if !newerManifests(dir) {
+		t.Error("a manifest with a newer schema should be noticed")
 	}
 }
 
@@ -625,5 +732,223 @@ func TestSelfExesAt(t *testing.T) {
 	}
 	if _, _, err := selfExesAt(`C:\Tools\renamed.exe`, same); err == nil {
 		t.Error("a program with an unexpected name should be an error")
+	}
+}
+
+func given(o options, flags ...string) options {
+	o.given = map[string]bool{}
+	for _, f := range flags {
+		o.given[f] = true
+	}
+	return o
+}
+
+func TestApplySettings(t *testing.T) {
+	fresh := func() *config {
+		cfg := newConfig()
+		cfg.Notify.Webhook = "https://ntfy.sh/secret-topic"
+		cfg.Distros["Ubuntu"] = &distroConfig{Dest: `D:\WSLBackup`, Keep: 7, DefaultExcludes: true, Exclude: []string{"./opt/big/*"}, Enabled: true}
+		cfg.Distros["Debian"] = &distroConfig{Dest: `D:\WSLBackup`, Keep: 3, DefaultExcludes: true, Enabled: true}
+		return cfg
+	}
+	flags := func(changes []settingChange) string {
+		var out []string
+		for _, c := range changes {
+			out = append(out, c.Flag)
+		}
+		return strings.Join(out, " ")
+	}
+
+	// 全域設定不需要指定 distro。
+	cfg := fresh()
+	changes, err := applySettings(cfg, "", given(options{at: "02:30", notify: notifyAlways, verify: verifyNone, webhook: "off"},
+		"--at", "--notify", "--verify", "--webhook"))
+	if err != nil || flags(changes) != "--at --webhook --notify --verify" {
+		t.Fatalf("global settings: %v, %v", changes, err)
+	}
+	if cfg.At != "02:30" || cfg.Notify.On != notifyAlways || cfg.Verify != verifyNone || cfg.Notify.Webhook != "" {
+		t.Errorf("global settings were not applied: %+v", cfg)
+	}
+	// webhook 的網址是機密：變更紀錄裡只有主機名稱。
+	for _, c := range changes {
+		if strings.Contains(c.Old+c.New, "secret-topic") {
+			t.Errorf("the webhook URL leaked into the change list: %+v", c)
+		}
+	}
+
+	// 和現在一樣的值不算變更。
+	cfg = fresh()
+	changes, err = applySettings(cfg, "Ubuntu", given(options{at: defaultAt, keep: 7, exclude: []string{"./opt/big/*", "./tmp/*"}, enable: true},
+		"--at", "--keep", "--exclude", "--enable"))
+	if err != nil || len(changes) != 0 {
+		t.Errorf("unchanged values were reported as changes: %v, %v", changes, err)
+	}
+
+	// 單一 distro 的設定，包含 0 這種有意義的零值。
+	cfg = fresh()
+	cfg.Distros["Ubuntu"].KeepWeekly = 4
+	changes, err = applySettings(cfg, "Ubuntu", given(options{keep: 3, keepWeekly: 0, keepMonthly: 6, exclude: []string{"./home/*/Downloads/*"}, disable: true},
+		"--keep", "--keep-weekly", "--keep-monthly", "--exclude", "--disable"))
+	u := cfg.Distros["Ubuntu"]
+	if err != nil || flags(changes) != "--keep --keep-weekly --keep-monthly --exclude --disable" {
+		t.Fatalf("per-distro settings: %v, %v", changes, err)
+	}
+	if u.Keep != 3 || u.KeepWeekly != 0 || u.KeepMonthly != 6 || u.Enabled || !slices.Contains(u.Exclude, "./home/*/Downloads/*") {
+		t.Errorf("per-distro settings were not applied: %+v", u)
+	}
+	if cfg.Distros["Debian"].Keep != 3 || !cfg.Distros["Debian"].Enabled {
+		t.Errorf("another distro was changed: %+v", cfg.Distros["Debian"])
+	}
+
+	// 取消自己加的排除。
+	cfg = fresh()
+	if _, err = applySettings(cfg, "Ubuntu", given(options{unexclude: []string{"./opt/big/*"}}, "--unexclude")); err != nil || len(cfg.Distros["Ubuntu"].Exclude) != 0 {
+		t.Errorf("removing an own exclude: %v, %+v", err, cfg.Distros["Ubuntu"])
+	}
+	// 取消預設排除裡的一項：其餘的預設項目要原樣留著。
+	cfg = fresh()
+	_, err = applySettings(cfg, "Ubuntu", given(options{unexclude: []string{"./tmp/*"}}, "--unexclude"))
+	got := cfg.Distros["Ubuntu"].excludes()
+	if err != nil || slices.Contains(got, "./tmp/*") {
+		t.Errorf("./tmp/* is still excluded: %v, %q", err, got)
+	}
+	for _, keep := range []string{"./init", "./var/tmp/*", "./home/*/.cache/*", "./root/.cache/*", "./opt/big/*"} {
+		if !slices.Contains(got, keep) {
+			t.Errorf("%s should still be excluded, got %q", keep, got)
+		}
+	}
+	// /init 不是 distro 的檔案，永遠排除。
+	if _, err = applySettings(fresh(), "Ubuntu", given(options{unexclude: []string{"./init"}}, "--unexclude")); !errors.Is(err, errBuiltinExclude) {
+		t.Errorf("removing ./init: err = %v", err)
+	}
+	// 不在清單裡的樣式：沒有變更，也不是錯誤。
+	if changes, err = applySettings(fresh(), "Ubuntu", given(options{unexclude: []string{"./nope"}}, "--unexclude")); err != nil || len(changes) != 0 {
+		t.Errorf("removing an unknown pattern: %v, %v", changes, err)
+	}
+
+	if _, err = applySettings(fresh(), "Fedora", given(options{keep: 2}, "--keep")); err == nil {
+		t.Error("a distro that is not set up should be an error")
+	}
+	if _, err = applySettings(fresh(), "", given(options{webhook: "not a url"}, "--webhook")); err == nil {
+		t.Error("an invalid webhook should be an error")
+	}
+}
+
+func TestParsePick(t *testing.T) {
+	cases := []struct {
+		answer string
+		count  int
+		want   []int
+	}{
+		{"1", 3, []int{0}}, {" 3 ", 3, []int{2}}, {"a", 3, []int{0, 1, 2}}, {"ALL", 2, []int{0, 1}},
+		{"0", 3, nil}, {"4", 3, nil}, {"", 3, nil}, {"two", 3, nil}, {"1,2", 3, nil}, {"a", 0, nil},
+	}
+	for _, c := range cases {
+		got, ok := parsePick(c.answer, c.count)
+		if !reflect.DeepEqual(got, c.want) || ok != (c.want != nil) {
+			t.Errorf("parsePick(%q, %d) = %v, %v; want %v", c.answer, c.count, got, ok, c.want)
+		}
+	}
+}
+
+func TestDoctorJudges(t *testing.T) {
+	if got := judgeSAC(sacEnforce, true); got.Level != levelFail || got.Fix == "" {
+		t.Errorf("Smart App Control enforcing: %+v", got)
+	}
+	if got := judgeSAC(sacEvaluation, true); got.Level != levelWarn {
+		t.Errorf("Smart App Control evaluating: %+v", got)
+	}
+	for _, c := range []struct {
+		state uint64
+		found bool
+	}{{sacOff, true}, {0, false}, {sacEnforce, false}} {
+		if got := judgeSAC(c.state, c.found); got.Level != levelOK {
+			t.Errorf("judgeSAC(%d, %v) = %+v", c.state, c.found, got)
+		}
+	}
+	if got := judgeCFA(1, true); got.Level != levelWarn || got.Fix == "" {
+		t.Errorf("Controlled folder access on: %+v", got)
+	}
+	// 2 是只稽核、不擋。
+	for _, state := range []uint64{0, 2} {
+		if got := judgeCFA(state, true); got.Level != levelOK {
+			t.Errorf("judgeCFA(%d) = %+v", state, got)
+		}
+	}
+	if judgeCFA(1, false).Level != levelOK {
+		t.Error("a missing value means the feature is off")
+	}
+
+	if judgeSpace(10, 20) != levelWarn || judgeSpace(20, 20) != levelOK || judgeSpace(0, 0) != levelOK {
+		t.Error("judgeSpace: warn only when the need is known and exceeds what is free")
+	}
+
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	cases := []struct {
+		label string
+		st    distroState
+		want  checkLevel
+	}{
+		{"fresh success", distroState{LastSuccess: ago(time.Hour), LastAttempt: ago(time.Hour), LastResult: resultOK}, levelOK},
+		{"never ran", distroState{}, levelWarn},
+		{"stale", distroState{LastSuccess: ago(72 * time.Hour), LastAttempt: ago(72 * time.Hour), LastResult: resultOK}, levelWarn},
+		{"failed after the last success", distroState{LastSuccess: ago(30 * time.Hour), LastAttempt: ago(time.Hour), LastResult: resultFailed, LastMessage: "disk full"}, levelFail},
+		{"failed, never succeeded", distroState{LastAttempt: ago(time.Hour), LastResult: resultFailed, LastMessage: "x"}, levelFail},
+		{"written but not verified", distroState{LastSuccess: ago(20 * time.Hour), LastAttempt: ago(time.Hour), LastResult: resultUnverified, LastMessage: "no space"}, levelWarn},
+	}
+	for _, c := range cases {
+		if got := judgeLastRun("Ubuntu", &c.st, now); got.Level != c.want {
+			t.Errorf("%s: level %d, want %d (%s)", c.label, got.Level, c.want, got.Text)
+		}
+	}
+}
+
+func TestParseCaches(t *testing.T) {
+	text := "wsl: a warning to ignore\n" +
+		"@wslbak\tcache\t1048576\t./var/cache/apt/archives/*\t/var/cache/apt/archives\n" +
+		"@wslbak\tcache\t5368709120\t./home/*/.npm/_cacache/*\t/home/me/.npm/_cacache\n" +
+		"@wslbak\tcache\tnot-a-number\t./x/*\t/x\n" +
+		"@wslbak\tdocker\t2147483648\n@wslbak\tdone\n"
+	caches, docker, done := parseCaches(text)
+	if !done || docker != 2<<30 || len(caches) != 2 {
+		t.Fatalf("parseCaches: %+v, docker=%d, done=%v", caches, docker, done)
+	}
+	// 最大的排前面。
+	if caches[0].Pattern != "./home/*/.npm/_cacache/*" || caches[0].Bytes != 5<<30 || caches[0].Path != "/home/me/.npm/_cacache" {
+		t.Errorf("largest cache = %+v", caches[0])
+	}
+	if _, _, done := parseCaches("@wslbak\tcache\t1\t./a/*\t/a\n"); done {
+		t.Error("a scan that did not reach the end must not count as done")
+	}
+}
+
+func TestAntivirus(t *testing.T) {
+	// 真實的輸出：Defender 沒有在執行（393472），Avast 是啟用的（266240）。
+	text := "393472|Windows Defender\r\n266240|Avast Antivirus\r\n\r\nnot a line\r\n266240|Avast Antivirus\r\n"
+	if got := parseAntivirus(text); !reflect.DeepEqual(got, []string{"Avast Antivirus"}) {
+		t.Errorf("parseAntivirus = %q", got)
+	}
+	// 暫時關閉防護（270336）的也算：它過一陣子會自己恢復。
+	if got := parseAntivirus("393472|Windows Defender\n270336|Avast Antivirus\n"); !reflect.DeepEqual(got, []string{"Avast Antivirus"}) {
+		t.Errorf("snoozed antivirus: parseAntivirus = %q", got)
+	}
+	// 關閉的（262144）不算。
+	if got := parseAntivirus("262144|Some AV\n"); len(got) != 0 {
+		t.Errorf("disabled antivirus: parseAntivirus = %q", got)
+	}
+	// Defender 啟用時的狀態值是 397568。
+	if got := parseAntivirus("397568|Windows Defender\n"); !reflect.DeepEqual(got, []string{"Windows Defender"}) {
+		t.Errorf("parseAntivirus = %q", got)
+	}
+	if _, ok := judgeAntivirus([]string{"Windows Defender"}, `C:\x`); ok {
+		t.Error("the built-in antivirus needs no note")
+	}
+	if _, ok := judgeAntivirus(nil, `C:\x`); ok {
+		t.Error("no antivirus, no note")
+	}
+	c, ok := judgeAntivirus([]string{"Windows Defender", "Avast Antivirus"}, `C:\Programs\wslbak`)
+	if !ok || c.Level != levelNote || !strings.Contains(c.Text, "Avast Antivirus") || !strings.Contains(c.Fix, `C:\Programs\wslbak`) {
+		t.Errorf("third-party antivirus: %+v, %v", c, ok)
 	}
 }

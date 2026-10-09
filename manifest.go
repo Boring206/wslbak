@@ -126,3 +126,29 @@ func newest(list []*manifest, onlyVerified bool) *manifest {
 	}
 	return nil
 }
+
+// newerManifests 回報 dir 裡有沒有「比這個版本新的 wslbak」寫的 manifest。
+// 那些備份我們讀不懂，也不知道它們之間的依賴關係，所以只要看到，就不在這個資料夾刪任何東西。
+func newerManifests(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		id, ok := strings.CutSuffix(e.Name(), ".json")
+		if !ok || e.IsDir() || !backupIDRe.MatchString(id) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var head struct {
+			Schema int `json:"schema"`
+		}
+		if json.Unmarshal(data, &head) == nil && head.Schema > manifestSchema {
+			return true
+		}
+	}
+	return false
+}
