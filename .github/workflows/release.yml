@@ -1,0 +1,94 @@
+# Publishes a release when a tag like v0.1.0 is pushed:
+#   unit tests -> build -> zips and checksums -> GitHub Release -> npm
+#
+# The npm step uses trusted publishing (no token is stored anywhere). It needs, once:
+#   - the package to exist on npm already (the very first publish is done by hand), and
+#   - on npmjs.com, package Settings -> Trusted Publisher -> GitHub Actions with
+#     user Boring206, repository wslbak, workflow file release.yml.
+# Provenance for the zips and for the npm package only works from a public repository,
+# so those steps are skipped while the repository is private.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: The tag must match the version in package.json
+        shell: bash
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+      - run: npm test
+      - run: npm run dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          if-no-files-found: error
+          path: |
+            dist/
+            bin/*.exe
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+      - name: Attest where the zips were built
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.zip
+      - name: Pack the package manifests for winget and scoop
+        run: cd dist && zip -r package-manifests.zip winget scoop
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS
+
+  npm:
+    needs: build
+    # Trusted publishing with provenance needs a public repository.
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+      - name: Trusted publishing needs npm 11.5.1 or newer
+        run: |
+          npm --version
+          node -e "const [a,b,c]=process.argv[1].split('.').map(Number); process.exit(a>11||(a===11&&(b>5||(b===5&&c>=1)))?0:1)" "$(npm --version)"
+      - name: The four executables built by the build job are in place
+        run: ls -l bin/wslbak-x64.exe bin/wslbak-arm64.exe bin/wslbakw-x64.exe bin/wslbakw-arm64.exe
+      # The executables were built and tested in the build job; --ignore-scripts keeps
+      # prepack from trying to build them again here, where there is no Go.
+      - run: npm publish --ignore-scripts

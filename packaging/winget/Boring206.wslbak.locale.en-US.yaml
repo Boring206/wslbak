@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
+PackageIdentifier: Boring206.wslbak
+PackageVersion: {{VERSION}}
+PackageLocale: en-US
+Publisher: Boring206
+PublisherUrl: https://github.com/Boring206
+PublisherSupportUrl: https://github.com/Boring206/wslbak/issues
+PackageName: wslbak
+PackageUrl: https://github.com/Boring206/wslbak
+License: MIT
+LicenseUrl: https://github.com/Boring206/wslbak/blob/main/LICENSE
+ShortDescription: Scheduled, verified backups of a WSL distro without stopping it, and one-line restore.
+Description: |-
+  wslbak backs up a WSL2 distro on a schedule while the distro keeps running, test-restores
+  every backup as a temporary distro, notifies you when something fails, and restores with one
+  command. Backups are standard .tar.gz archives that wsl --import accepts.
+Tags:
+  - wsl
+  - wsl2
+  - backup
+  - restore
+  - cli
+ReleaseNotesUrl: https://github.com/Boring206/wslbak/releases/tag/v{{VERSION}}
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0

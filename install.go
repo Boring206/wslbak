@@ -75,6 +75,15 @@ func selfExes() (cli, gui string, err error) {
 	if err != nil {
 		return "", "", err
 	}
+	return selfExesAt(self, filepath.EvalSymlinks)
+}
+
+// selfExesAt 是 selfExes 的本體。resolve 把符號連結換成它真正指向的檔案：
+// 有些安裝方式（例如 winget）是在 PATH 上的資料夾放一個連結，另一個執行檔並不在連結旁邊。
+func selfExesAt(self string, resolve func(string) (string, error)) (cli, gui string, err error) {
+	if real, err := resolve(self); err == nil && real != "" {
+		self = real
+	}
 	dir, base := filepath.Split(self)
 	lower := strings.ToLower(base)
 	rest, ok := strings.CutPrefix(lower, "wslbakw")

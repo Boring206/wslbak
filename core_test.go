@@ -597,3 +597,33 @@ func TestCleanPartials(t *testing.T) {
 		t.Error("the leftover partial is still there")
 	}
 }
+
+func TestSelfExesAt(t *testing.T) {
+	same := func(p string) (string, error) { return p, nil }
+	cases := []struct {
+		label    string
+		self     string
+		resolve  func(string) (string, error)
+		cli, gui string
+	}{
+		{"npm package, console", `C:\npm\wslbak\bin\wslbak-x64.exe`, same, `C:\npm\wslbak\bin\wslbak-x64.exe`, `C:\npm\wslbak\bin\wslbakw-x64.exe`},
+		{"npm package, windowless", `C:\npm\wslbak\bin\wslbakw-arm64.exe`, same, `C:\npm\wslbak\bin\wslbak-arm64.exe`, `C:\npm\wslbak\bin\wslbakw-arm64.exe`},
+		{"release zip or installed copy", `C:\Tools\wslbak\wslbak.exe`, same, `C:\Tools\wslbak\wslbak.exe`, `C:\Tools\wslbak\wslbakw.exe`},
+		{"started by the scheduler", `C:\Tools\wslbak\WSLBAKW.EXE`, same, `C:\Tools\wslbak\wslbak.exe`, `C:\Tools\wslbak\wslbakw.exe`},
+		// winget 在 Links 資料夾放的是連結；另一個執行檔在連結指向的地方。
+		{"through a symlink", `C:\Users\me\AppData\Local\Microsoft\WinGet\Links\wslbak.exe`,
+			func(string) (string, error) { return `C:\Pkgs\Boring206.wslbak\wslbak.exe`, nil },
+			`C:\Pkgs\Boring206.wslbak\wslbak.exe`, `C:\Pkgs\Boring206.wslbak\wslbakw.exe`},
+		{"a link that cannot be resolved is used as it is", `C:\Links\wslbak.exe`,
+			func(string) (string, error) { return "", os.ErrNotExist }, `C:\Links\wslbak.exe`, `C:\Links\wslbakw.exe`},
+	}
+	for _, c := range cases {
+		cli, gui, err := selfExesAt(c.self, c.resolve)
+		if err != nil || cli != c.cli || gui != c.gui {
+			t.Errorf("%s: got %q, %q, %v", c.label, cli, gui, err)
+		}
+	}
+	if _, _, err := selfExesAt(`C:\Tools\renamed.exe`, same); err == nil {
+		t.Error("a program with an unexpected name should be an error")
+	}
+}
