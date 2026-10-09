@@ -33,8 +33,6 @@ jobs:
   # Formatting, static analysis, known vulnerabilities, and the shell scripts.
   lint:
     runs-on: ubuntu-latest
-    env:
-      GOOS: windows
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -42,12 +40,15 @@ jobs:
           go-version-file: go.mod
       - name: gofmt
         run: test -z "$(gofmt -l . scripts)"
+      # The tools are built for this runner; what they look at is the Windows program.
+      - name: Install staticcheck and govulncheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
       - name: staticcheck
-        run: GOOS=linux go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
-        env:
-          GOFLAGS: ''
+        run: GOOS=windows "$(go env GOPATH)/bin/staticcheck" ./...
       - name: govulncheck
-        run: GOOS=linux go install golang.org/x/vuln/cmd/govulncheck@v1.8.0 && "$(GOOS=linux go env GOPATH)/bin/govulncheck" ./...
+        run: GOOS=windows "$(go env GOPATH)/bin/govulncheck" ./...
       - name: shellcheck
         run: |
           shellcheck --version | sed -n 2p
