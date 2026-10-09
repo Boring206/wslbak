@@ -124,12 +124,15 @@ wslbak restore
 會還原最新一份通過試還原的備份。原本名稱的 distro 如果還在，還原出來的會叫 `<名稱>-restored-<日期>`；
 也可以用 `--name` 自己指定。既有的 distro 不會被覆蓋、更動或移除，還原出來的那個也不會被自動啟動。
 
-**重灌 Windows 之後**不需要 Node 或 npm。每次備份都會在備份資料夾裡放一份程式與
-`README-RESTORE.txt`。裝好 WSL 之後執行：
+**重灌 Windows 之後**，原本裝在 C: 的 wslbak 也跟著不見了。這時不必重新安裝它，也不需要 Node 或 npm：
+wslbak 每次備份時，會把自己的程式（`wslbak.exe`）和一份說明（`README-RESTORE.txt`）複製到備份資料夾裡，
+和備份放在一起。所以只要備份資料夾還在（例如在 D: 或外接碟），裝好 WSL 之後直接執行資料夾裡的那一份：
 
 ```
 D:\WSLBackup\wslbak.exe restore
 ```
+
+（`D:\WSLBackup` 是預設的備份資料夾，你選了別的位置就換成那個位置。）
 
 **完全不用 wslbak 也可以**，備份就是一般的封存檔：
 

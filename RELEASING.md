@@ -11,6 +11,8 @@
    `npm run build && npm publish` (it asks for your second factor).
 4. **Allow the workflow to publish.** On npmjs.com: the package → Settings → Trusted Publisher →
    GitHub Actions, with user `Boring206`, repository `wslbak`, workflow file `release.yml`.
+   Then tell the workflow that this is done: `gh variable set NPM_TRUSTED_PUBLISHER --body yes`.
+   Until that variable is set, the workflow makes the GitHub Release and leaves npm alone.
 5. **Turn on private vulnerability reporting**: repository Settings → Code security.
 
 ## Every release

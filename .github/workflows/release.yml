@@ -2,9 +2,11 @@
 #   unit tests -> build -> zips and checksums -> GitHub Release -> npm
 #
 # The npm step uses trusted publishing (no token is stored anywhere). It needs, once:
-#   - the package to exist on npm already (the very first publish is done by hand), and
+#   - the package to exist on npm already (the very first publish is done by hand),
 #   - on npmjs.com, package Settings -> Trusted Publisher -> GitHub Actions with
-#     user Boring206, repository wslbak, workflow file release.yml.
+#     user Boring206, repository wslbak, workflow file release.yml, and
+#   - the repository variable NPM_TRUSTED_PUBLISHER set to "yes" once that is done.
+#     Until then the npm job is skipped instead of failing.
 # Provenance for the zips and for the npm package only works from a public repository,
 # so those steps are skipped while the repository is private.
 #
@@ -140,8 +142,9 @@ jobs:
 
   npm:
     needs: build
-    # Trusted publishing with provenance needs a public repository.
-    if: ${{ github.event_name == 'push' && !github.event.repository.private }}
+    # Trusted publishing with provenance needs a public repository, and the publisher has
+    # to be set up on npmjs.com first (see the top of this file).
+    if: ${{ github.event_name == 'push' && !github.event.repository.private && vars.NPM_TRUSTED_PUBLISHER == 'yes' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -163,4 +166,11 @@ jobs:
         run: ls -l bin/wslbak-x64.exe bin/wslbak-arm64.exe bin/wslbakw-x64.exe bin/wslbakw-arm64.exe
       # The executables were built and tested in the build job; --ignore-scripts keeps
       # prepack from trying to build them again here, where there is no Go.
-      - run: npm publish --ignore-scripts
+      # A version that is on npm already (published by hand) is left alone.
+      - run: |
+          version="$(node -p "require('./package.json').version")"
+          if npm view "wslbak@$version" version >/dev/null 2>&1; then
+            echo "wslbak@$version is on npm already; nothing to publish."
+          else
+            npm publish --ignore-scripts
+          fi
