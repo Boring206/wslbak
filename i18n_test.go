@@ -20,13 +20,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func withLanguage(t *testing.T, l language) {
-	t.Helper()
-	old := T
-	setLanguage(l)
-	t.Cleanup(func() { T = old })
-}
-
 func hasCJK(s string) bool {
 	for _, r := range s {
 		if unicode.Is(unicode.Han, r) || (r >= 0x3000 && r <= 0x303F) || (r >= 0xFF00 && r <= 0xFFEF) {

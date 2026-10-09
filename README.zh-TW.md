@@ -304,7 +304,8 @@ wslbak 把真正的大小也寫進那個標頭，備份在那裡也能正確還�
 
 ## 開發
 
-需要 Go 1.25 以上與 Node.js。
+需要 Go 1.26 以上與 Node.js。程式遵守的規則見 [CONTRIBUTING.md](CONTRIBUTING.md)，整體結構見
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，回報安全性問題的方式見 [SECURITY.md](SECURITY.md)（這三份是英文）。
 
 ```
 npm test         # go vet 加上單元測試

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: A security problem
+    url: https://github.com/Boring206/wslbak/security/advisories/new
+    about: Please report vulnerabilities privately. See SECURITY.md.

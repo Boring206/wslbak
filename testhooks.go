@@ -23,6 +23,12 @@ const (
 	// 取回檔案時，在「解開完」與「搬到目的地」之間停下來：先建立「<值>.reached」這個檔案，
 	// 再等「<值>」這個檔案出現（最多一分鐘）。測試利用這段時間把目的地換成別的東西。
 	envTestHoldBeforeMove = "WSLBAK_TEST_HOLD_BEFORE_MOVE"
+	// 「多久沒有資料就算停住」改成這麼多秒，測試才不必等上十分鐘。
+	envTestStallSeconds = "WSLBAK_TEST_STALL_SECONDS"
+	// 從 distro 讀資料的速度上限（MiB／秒），讓一次備份久到來得及在途中做別的事。
+	envTestReadRate = "WSLBAK_TEST_READ_MIB_PER_SECOND"
+	// 設成 1 時，排程第一次開始的時間可以落在過去，用來測試「錯過之後補跑」。
+	envTestPastStart = "WSLBAK_TEST_PAST_START"
 )
 
 // fullAfterWriter 讓前 left 個位元組照常寫入，之後回報磁碟已滿。
@@ -76,4 +82,46 @@ func testHoldBeforeMove() {
 	for i := 0; i < 600 && !fileExists(path); i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// currentStallLimit 是「多久沒有資料就算停住」；沙箱裡可以用環境變數縮短。
+func currentStallLimit() time.Duration {
+	if homeOverride != "" {
+		if n, err := strconv.Atoi(os.Getenv(envTestStallSeconds)); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return stallLimit
+}
+
+// slowReader 把讀取的速度壓在一個上限以下。
+type slowReader struct {
+	r       io.Reader
+	perByte time.Duration
+}
+
+func (s *slowReader) Read(p []byte) (int, error) {
+	if len(p) > 64<<10 {
+		p = p[:64<<10]
+	}
+	n, err := s.r.Read(p)
+	time.Sleep(time.Duration(n) * s.perByte)
+	return n, err
+}
+
+// withTestReadRate 在沙箱裡依環境變數放慢讀取；其他時候原樣傳回。
+func withTestReadRate(r io.Reader) io.Reader {
+	if homeOverride == "" {
+		return r
+	}
+	rate, err := strconv.Atoi(os.Getenv(envTestReadRate))
+	if err != nil || rate <= 0 {
+		return r
+	}
+	return &slowReader{r: r, perByte: time.Second / time.Duration(rate<<20)}
+}
+
+// pastStartAllowed：排程第一次開始的時間能不能落在過去。
+func pastStartAllowed() bool {
+	return homeOverride != "" && os.Getenv(envTestPastStart) == "1"
 }

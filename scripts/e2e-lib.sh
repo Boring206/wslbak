@@ -1,5 +1,8 @@
+# shellcheck shell=bash
 # Helpers shared by the end-to-end scripts. Source it after scripts/e2e-distro.sh, with
 # HOME_DIR set to the sandbox folder that wslbak gets through --home.
+# Some of what is set here is only read by the scripts that source this file.
+# shellcheck disable=SC2034
 
 pass=0
 fail=0

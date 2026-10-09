@@ -1,0 +1,12 @@
+# Weekly pull requests for newer versions of the Go modules and of the actions the
+# workflows use (the actions are pinned to a commit, so they do not move by themselves).
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
