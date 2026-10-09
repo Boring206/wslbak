@@ -42,7 +42,8 @@ main() {
 	# 各使用者家目錄裡，開發工具的下載快取。
 	measure './home/*/.npm/_cacache/*' /home/*/.npm/_cacache
 	measure './home/*/.local/share/pnpm/store/*' /home/*/.local/share/pnpm/store
-	measure './home/*/.cache/yarn/*' /home/*/.yarn/cache
+	measure './home/*/.yarn/cache/*' /home/*/.yarn/cache
+	measure './home/*/.yarn/berry/cache/*' /home/*/.yarn/berry/cache
 	measure './home/*/.gradle/caches/*' /home/*/.gradle/caches
 	measure './home/*/.cargo/registry/*' /home/*/.cargo/registry
 	measure './home/*/go/pkg/mod/*' /home/*/go/pkg/mod

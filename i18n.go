@@ -404,7 +404,7 @@ var zhTW = catalog{
   status           顯示排程、上次結果，以及已安裝的執行檔是否完好
   doctor           逐項檢查環境與設定，找出備份跑不起來的原因與修法
   verify [編號]    對既有的備份重新試還原（預設是最新一份）
-  restore [編號]   把備份還原成新的 distro（預設是最新一份；不會覆蓋既有的 distro）
+  restore [編號]   把備份還原成新的 distro（預設是最新一份通過試還原的，沒有就用最新一份；不會覆蓋既有的 distro）
   uninstall        移除排程與已安裝的執行檔；備份不會被刪除
 
 選項：
@@ -695,9 +695,10 @@ var zhTW = catalog{
 	DocTarMissing:       "%s：裡面沒有安裝 tar",
 	RestoreReadme: `這個資料夾是 wslbak 做的 WSL 備份（https://github.com/Boring206/wslbak）
 
-每個子資料夾是一個 distro。一份備份有兩個檔案：
+每個子資料夾是一個 distro。一份備份有三個檔案：
   <編號>.tar.gz   整個 distro，標準的 tar 封存
   <編號>.json     這份備份的資訊（大小、檢查碼、試還原的結果）
+  <編號>.idx.gz   裡面的檔案清單（wslbak files 用的，還原時用不到）
 
 要還原時，在這個資料夾開啟 PowerShell 或命令提示字元，執行：
 
@@ -737,7 +738,7 @@ Commands:
   status           Show the schedule, the last result, and whether the installed program is intact
   doctor           Check the environment and settings one by one, with a fix for whatever would stop backups
   verify [id]      Test-restore an existing backup again (default: the newest)
-  restore [id]     Restore a backup as a new distro (default: the newest; never overwrites a distro)
+  restore [id]     Restore a backup as a new distro (default: the newest verified one, else the newest; never overwrites a distro)
   uninstall        Remove the scheduled task and the installed program; backups are kept
 
 Options:
@@ -748,7 +749,7 @@ Options:
       --keep-weekly <weeks>  init, config: also keep one per week, for this many weeks (default 0)
       --keep-monthly <months>  init, config: also keep one per month, for this many months (default 0)
       --at <HH:MM>           init, config: time of the daily backup (default 03:00)
-      --webhook <url>        init, config: also report failures to this URL (ntfy, Discord, Slack); off removes it
+      --webhook <url>        init, config: also report failures to this URL (ntfy, Discord, Slack); with config, off removes it
       --notify <when>        config: failure notifies only on failure, always after every backup
       --verify <how>         config: restore test-restores every backup, none turns that off
       --exclude <pattern>    config: exclude one more path pattern, such as /home/*/Downloads/* (repeatable)
@@ -1028,9 +1029,10 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	DocTarMissing:       "%s: it has no tar installed",
 	RestoreReadme: `WSL backups made by wslbak (https://github.com/Boring206/wslbak)
 
-Each subfolder is one distro. A backup is two files:
+Each subfolder is one distro. A backup is three files:
   <id>.tar.gz   the whole distro as a standard tar archive
   <id>.json     details about that backup (size, checksum, test-restore result)
+  <id>.idx.gz   the list of files in it (for wslbak files; not needed to restore)
 
 To restore, open PowerShell or Command Prompt in this folder and run:
 

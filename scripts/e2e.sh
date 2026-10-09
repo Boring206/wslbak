@@ -5,7 +5,8 @@
 # Nothing here touches a real distro or the real wslbak settings. Everything runs against
 # a throwaway Debian distro (wslbak-e2e-<random>, see scripts/e2e-distro.sh) and a sandbox
 # folder passed with --home, under %LOCALAPPDATA%\wslbak-e2e. The test distro is created
-# on first use and kept for the next run; remove it with: scripts/e2e-distro.sh destroy
+# on first use and removed at the end; with KEEP_E2E_DISTRO=1 it is kept for the next run,
+# and scripts/e2e-distro.sh destroy removes it.
 #
 # To test against another distro family, set E2E_DISTRO to a name from
 # `wsl --list --online` (FedoraLinux-44, archlinux, openSUSE-Tumbleweed, …) or to alpine:

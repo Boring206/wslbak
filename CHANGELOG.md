@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+Found by checking every statement of the README against the code:
+
+- `wslbak doctor` suggested an exclude pattern for the yarn cache that did not match the folder it
+  had measured.
+- `README-RESTORE.txt`, which is written into the backup folder, said a backup is two files; it is
+  three.
+- The usage text now says how `restore` picks a backup when none is verified, and that `off` for
+  `--webhook` belongs to `config`.
+- Three error messages could show a line that came from inside the distro without making control
+  characters visible.
+
 ## 0.1.0
 
 First release.
