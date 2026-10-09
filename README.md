@@ -132,12 +132,17 @@ restores the newest backup that passed its test restore. If a distro with the or
 exists, the copy is called `<name>-restored-<date>`; pick your own with `--name`. An existing distro
 is never overwritten, changed or removed, and the restored one is not started for you.
 
-**After reinstalling Windows**, you do not need Node or npm. Every backup run puts a copy of the
-program and a `README-RESTORE.txt` into the backup folder. Install WSL, then:
+**After reinstalling Windows**, the wslbak that was installed on C: is gone too. You do not have to
+install it again, and you need neither Node nor npm: on every backup run wslbak copies its own
+program (`wslbak.exe`) and a note (`README-RESTORE.txt`) into the backup folder, next to the
+backups. So as long as the backup folder is still there (on D: or an external drive, say), install
+WSL and run the copy in that folder:
 
 ```
 D:\WSLBackup\wslbak.exe restore
 ```
+
+(`D:\WSLBackup` is the default backup folder; use your own if you chose another.)
 
 **Without wslbak at all**, a backup is an ordinary archive:
 
