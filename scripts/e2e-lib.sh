@@ -12,7 +12,19 @@ skipped=0
 WB=(node bin/wslbak.js --lang en --home "$HOME_DIR")
 PS="$SYS32/WindowsPowerShell/v1.0/powershell.exe"
 
-section() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+# crumb <text>: where the run is, told to someone outside it. A runner that hangs takes its
+# log with it; with E2E_CRUMB_URL set (the workflow sets it to the commit's status address),
+# the text is posted there, so that the place where a run stopped can still be read.
+crumb() {
+	[ -n "${E2E_CRUMB_URL:-}" ] || return 0
+	curl -s -m 10 -o /dev/null -X POST -H "Authorization: Bearer ${E2E_CRUMB_TOKEN:-}" -H 'Accept: application/vnd.github+json' \
+		-d "$(printf '{"state":"%s","context":"%s","description":"%s"}' "${2:-pending}" "${E2E_CRUMB_CONTEXT:-e2e}" "$(printf '%s' "$1" | tr -d '"\\' | cut -c1-130)")" \
+		"$E2E_CRUMB_URL" || true
+}
+section() {
+	printf '\n\033[1m%s\033[0m\n' "$1"
+	crumb "$1"
+}
 ok() {
 	pass=$((pass + 1))
 	printf '  \033[32mpass\033[0m %s\n' "$1"
@@ -84,5 +96,6 @@ registered() { [ -n "$(registered_path "$1")" ]; }
 
 finish() {
 	printf '\n%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
+	crumb "$pass passed, $fail failed, $skipped skipped" "$([ "$fail" -eq 0 ] && echo success || echo failure)"
 	[ "$fail" -eq 0 ]
 }
