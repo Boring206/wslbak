@@ -42,7 +42,8 @@ if command -v setfattr >/dev/null 2>&1; then setfattr -n user.wslbak -v hello pl
 truncate -s 9G sparse.bin
 printf 'data' | dd of=sparse.bin bs=1 seek=1000000 conv=notrunc 2>/dev/null
 
-cp /bin/true cap-binary
+# Any real program will do. (Not "true": for the shell that is a built-in without a file.)
+cp "$(command -v ls)" cap-binary
 if command -v setcap >/dev/null 2>&1; then setcap cap_net_raw+ep cap-binary; fi
 
 echo acl >acl-file
@@ -59,7 +60,7 @@ long=$(printf 'd%.0s' $(seq 1 120))
 mkdir -p "$long/$long"
 echo deep >"$long/$long/$(printf 'f%.0s' $(seq 1 150)).txt"
 
-cp /bin/true setuid-binary
+cp "$(command -v ls)" setuid-binary
 chmod 4755 setuid-binary
 # A name that would change the colour of a console if it were printed as it is.
 : >"$(printf 'esc\033[31mred')"

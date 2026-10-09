@@ -30,6 +30,17 @@ import (
 // 所以只接受我們自己的格式，不照單全收腳本印出來的東西。
 var stagedLinkRe = regexp.MustCompile(`^/(run|dev/shm|tmp)/wslbak-[0-9a-f]{16}$`)
 
+// tarPathRe 是 restorefiles.sh 回報的 tar 的位置。它也會出現在命令列上，同樣只接受單純的絕對路徑。
+var tarPathRe = regexp.MustCompile(`^(/[A-Za-z0-9_.+-]+){1,12}/tar$`)
+
+// tarProgram 決定解開檔案時要執行的 tar：腳本回報了可用的絕對路徑就用它，否則讓 distro 自己從 PATH 找。
+func tarProgram(reported []string) string {
+	if len(reported) == 1 && len(reported[0]) <= 200 && tarPathRe.MatchString(reported[0]) {
+		return reported[0]
+	}
+	return "tar"
+}
+
 // selection 是使用者要取回的那些路徑，已經整理成封存裡的名稱。
 type selection struct {
 	roots  []string        // 選中的路徑；目錄代表它底下的一切
@@ -121,9 +132,9 @@ func validInto(p string) bool {
 	return true
 }
 
-// extractArgs 是在 distro 裡解開檔案用的命令列。除了我們自己產生的連結以外，全部是固定的字。
-func extractArgs(distro, link string, dropped []string) []string {
-	args := []string{"-d", distro, "-u", "root", "-e", "env", "LC_ALL=C", "tar",
+// extractArgs 是在 distro 裡解開檔案用的命令列。除了我們自己產生的連結與檢查過的 tar 位置以外，全部是固定的字。
+func extractArgs(distro, tar, link string, dropped []string) []string {
+	args := []string{"-d", distro, "-u", "root", "-e", "env", "LC_ALL=C", tar,
 		"--extract", "--file=-", "--directory=" + link,
 		"--numeric-owner", "--same-owner", "--same-permissions",
 		// 目的地是空的，本來就沒有東西可以蓋；這個選項確保萬一有，也是報錯而不是覆蓋。
@@ -241,11 +252,10 @@ func cmdRestorePath(opts options) int {
 		return fail(prepareError("unexpected", opts.into))
 	}
 	link := staged[0]
+	reportedTar, _ := protoValue(rows, "tar")
 	defer func() {
-		// 把暫時的連結拿掉。只刪這一個名稱，不遞迴。
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		runSystem(ctx, "", system32("wsl.exe"), "-d", d.Name, "-u", "root", "-e", "rm", "-f", link)
-		cancel()
+		// 把暫時的連結拿掉。經由同一份腳本來做：直接執行 rm 的話，工具不在一般位置的 distro（NixOS）找不到它。
+		runInDistro(d.Name, withVars(restoreFilesScript, scriptVar{"WSLBAK_REMOVE", link}), 30*time.Second)
 	}()
 
 	// 2. 讀備份檔、濾出選中的項目、送進 distro 解開。
@@ -265,7 +275,7 @@ func cmdRestorePath(opts options) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), importTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, system32("wsl.exe"), extractArgs(d.Name, link, m.Dropped)...)
+	cmd := exec.CommandContext(ctx, system32("wsl.exe"), extractArgs(d.Name, tarProgram(reportedTar), link, m.Dropped)...)
 	cmd.Dir = systemRoot()
 	cmd.Env = append(os.Environ(), "WSL_UTF8=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}

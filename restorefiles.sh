@@ -6,6 +6,7 @@
 # 變數由 wslbak 加在這份腳本前面的賦值提供：
 #   WSLBAK_TARGET  目的地，distro 裡的絕對路徑
 #   WSLBAK_TOKEN   這次作業的代號（16 個十六進位字元）
+#   WSLBAK_REMOVE  有值的時候不做準備，只把這個暫時的連結拿掉（作業結束後的收尾）
 #
 # 準備好之後，在記憶體檔案系統上建立一個以代號命名的連結指向目的地。
 # 之後解開檔案的那個指令只需要用到這個連結，使用者給的路徑就不必出現在任何命令列上。
@@ -18,7 +19,18 @@ main() {
 	PATH="$PATH:/run/current-system/sw/bin"
 	LC_ALL=C
 	export PATH LC_ALL
+	if [ -n "$WSLBAK_REMOVE" ]; then
+		# 只刪這一個名稱，而且只在它真的是連結的時候。
+		if [ -L "$WSLBAK_REMOVE" ]; then
+			rm -f "$WSLBAK_REMOVE"
+		fi
+		say "done"
+		exit 0
+	fi
 	target=$WSLBAK_TARGET
+	# 之後解開檔案的那個指令不經過 shell，只找得到一般位置上的 tar；
+	# 工具放在別處的 distro（例如 NixOS）要先在這裡把它的位置找出來。
+	say "tar	$(command -v tar 2>/dev/null)"
 
 	case $target in
 	/*) ;;
