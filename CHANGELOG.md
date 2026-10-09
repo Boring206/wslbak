@@ -22,7 +22,8 @@ First release.
   destinations and free space, points out large caches that could be excluded, and says when other
   accounts on the PC can read the backup folder (backups are not encrypted).
 - `wslbak config --private` restricts the backup folder to your own account.
-- `wslbak list`, `status`, `verify` and `uninstall`; `--dry-run` on every command that changes something.
+- `wslbak list`, `status`, `verify` and `uninstall`; `--dry-run` on `init`, `config`, `run`, `restore`
+  and `uninstall`.
 - A Windows notification when a backup fails or cannot be verified, and optionally a webhook (ntfy,
   Discord, Slack). Notifications never contain file names.
 - Interface in English and Traditional Chinese, following the Windows display language; override with
@@ -32,6 +33,6 @@ First release.
 - A file of 8 GiB or more survives a restore. The importer that ships with WSL 2.7 restores such a
   file as empty when an archive is written the way GNU tar writes it by default; wslbak writes the
   size where that importer looks for it, and the test restore checks the sizes of the largest files.
-- Tested end to end against Debian, Ubuntu, Fedora, AlmaLinux, Rocky Linux, Arch Linux, openSUSE
-  Tumbleweed, Kali, Gentoo and Alpine, on three builds of Windows; see the README for versions and
+- Tested end to end against Debian, Ubuntu, Fedora, AlmaLinux, Rocky Linux, Oracle Linux, Arch Linux,
+  openSUSE Tumbleweed, Kali, Gentoo, NixOS and Alpine, on three builds of Windows; see the README for versions and
   for what has not been tried.

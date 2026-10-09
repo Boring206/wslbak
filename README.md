@@ -13,7 +13,9 @@ notification when something fails, and a one-line restore.
 
 The same tour as a [video](docs/demo.en.mp4). It is a recording of the commands as they ran, on a
 PC where wslbak was installed from its npm package and a demo distro named `wslbak-demo` existed;
-no text in it is changed. Only the typing speed is drawn, and waits are shortened.
+no text that the commands printed is changed. The drawing script adds the step titles and the cards
+at the start and the end, types the commands at a drawn speed, shows long output a page at a time
+and shortens waits.
 
 Files inside WSL are not covered by OneDrive or most backup tools: they live in one virtual disk, and
 when that disk is damaged or Windows is reinstalled, everything in it is gone. The usual answer is a
@@ -24,17 +26,20 @@ while it keeps running:
 ```
 > wslbak init
 > wslbak run
-Backing up Ubuntu-24.04 → D:\WSLBackup\Ubuntu-24.04
-  wrote 20260115T030000Z.tar.gz (7.2 GB, 1 min 48 s)
-  1 files or folders changed while being read (normal for a backup of a running system).
+Backing up wslbak-demo → D:\WSLBackup\wslbak-demo
+  wrote 20261009T181645Z.tar.gz (91 MB, 2 s)
 Test restore…
-  test restore passed: all 512 sampled files match (1 min 33 s)
+  test restore passed: all 512 sampled files match (2 s)
 Done.
 ```
 
+(This is the run in the recording: a freshly installed Debian holding 262 MB. A distro you work in
+is larger and takes correspondingly longer.)
+
 - **The distro is never stopped.** A root `tar` inside the distro streams it out; WSL is not shut down
   and nothing in the distro is written to.
-- **Every backup is test-restored.** The archive is imported as a temporary distro, checked, and removed.
+- **Every backup is test-restored**, unless you switch that off. The archive is imported as a
+  temporary distro, checked, and removed.
 - **Standard format.** A backup is a plain `.tar.gz` that `wsl --import` accepts, with or without wslbak.
 - **One command to set up**: a daily task, how many backups to keep, where they go.
 - **Restore never overwrites.** A whole distro comes back as a new distro; single files come back into
@@ -43,7 +48,8 @@ Done.
 ## Install
 
 Requires Windows 10 or 11 and the Microsoft Store version of WSL (`wsl --version` must work; run
-`wsl --update` if it does not).
+`wsl --update` if it does not). Windows 10 itself has not been tried yet; see
+[Limitations](#limitations) for what has.
 
 With Node.js 18 or newer, from a Windows terminal or from inside WSL:
 
@@ -65,14 +71,19 @@ the schedule.
 wslbak init
 ```
 
-`init` looks at your distros, proposes a destination, and then shows everything it is about to create
-— the files, the registry key, the scheduled task and its exact command line — before asking
-`Proceed? [y/N]`. Nothing is changed until you say yes; `--dry-run` shows the same plan and stops.
-No administrator rights are needed. With several distros it asks which one; `--all` sets up all of them.
+`init` looks at your distros (one that is stopped is started for that), proposes a destination, and
+then shows what it is about to set up — the program files, the settings file, the registry key, the
+scheduled task and its exact command line — before asking `Proceed? [y/N]`. Nothing is set up until
+you say yes: up to then `init` has only made its own folder `%LOCALAPPDATA%\wslbak` with a log and a
+lock file in it and, where wslbak was set up before, brought the installed copy of the program up to
+date. `--dry-run` shows the same plan and stops without creating even those. No administrator rights
+are needed. With several distros it asks which one; `--all` sets up all of them.
 
 By default backups go to `<drive>:\WSLBackup` on the internal drive with the most free space other
-than the one holding the distro, so that they survive reinstalling Windows. An external drive or a
-NAS share (`--dest`) also protects against the disk itself failing; `init` tells you when the
+than the one holding the distro, so that they survive reinstalling Windows. A PC that has no such
+drive gets `WSLBackup` in your user folder instead; that is on the same drive as the distro and does
+not survive a reinstall that formats it, so give another place with `--dest` there. An external
+drive or a NAS share also protects against the disk itself failing; `init` tells you when the
 destination is on the same physical disk as the distro.
 
 `wslbak doctor` checks the whole setup at any time and says how to fix what it finds.
@@ -85,20 +96,21 @@ wslbak config            show the settings; with options, change them
 wslbak run               back up now, test-restore, prune old backups
 wslbak list              list backups
 wslbak files [id] [path] list what a backup holds in a folder
-wslbak status            schedule, last result, and whether the installed program is intact
-wslbak doctor            check the environment and settings, with a fix for each problem
+wslbak status            schedule, last result, and whether the installed program is still there
+wslbak doctor            check the environment and settings, with a fix for most problems
 wslbak verify [id]       test-restore an existing backup again (default: the newest)
 wslbak restore [id]      restore a backup as a new distro (default: the newest verified one)
 wslbak uninstall         remove the task and the installed program; backups are kept
 
-  -d, --distro <name>      which distro (default: the only one that can be backed up)
+  -d, --distro <name>      which distro (default: for init the only one that can be backed up,
+                           for run all that are set up)
       --all                init: set up every distro that can be backed up
       --dest <folder>      init: where to store backups
       --keep <count>       init, config: how many of the newest verified backups to keep (default 7)
-      --keep-weekly <n>    init, config: also keep one per week, for n weeks
-      --keep-monthly <n>   init, config: also keep one per month, for n months
+      --keep-weekly <n>    init, config: also keep one per week, for n weeks (default 0)
+      --keep-monthly <n>   init, config: also keep one per month, for n months (default 0)
       --at <HH:MM>         init, config: time of the daily backup (default 03:00)
-      --webhook <url>      init, config: also report failures to this URL; off removes it
+      --webhook <url>      init, config: also report failures to this URL; with config, off removes it
       --notify <when>      config: failure (default) or always
       --verify <how>       config: restore (default) or none
       --exclude <pattern>  config: exclude one more path pattern (repeatable)
@@ -109,16 +121,19 @@ wslbak uninstall         remove the task and the installed program; backups are 
       --find <text>        files: list entries whose name or path contains this text
       --name <name>        restore: name of the restored distro
       --to <folder>        restore: where to put the restored distro
-      --path <path>        restore: bring back only this file or folder (repeatable)
+      --path <path>        restore: bring back only this file or folder (repeatable; needs --into)
       --into <folder>      restore: put those files into this folder inside the distro
-  -n, --dry-run            only show what would be done
-  -y, --yes                do not ask for confirmation
-      --lang <lang>        interface language: en or zh-TW
+  -n, --dry-run            init, config, run, restore, uninstall: only show what would be done
+  -y, --yes                init, restore, uninstall: do not ask for confirmation
+      --lang <lang>        interface language: en or zh-TW (or set WSLBAK_LANG)
       --debug              show details and timing of each step
+  -v, --version            print the version
+  -h, --help               print the usage
 ```
 
-Exit codes: `0` success; `1` the backup was written but not verified, or `status`/`doctor` found
-something that needs attention; `2` failure; `3` another wslbak is already running.
+Exit codes: `0` success (also after `run --no-verify`); `1` a backup was written but its test
+restore could not be carried out, `files` found nothing, or `status`, `doctor` or `config` found
+something that needs attention; `2` failure; `3` another wslbak is already at work.
 
 Inside WSL you can give Linux paths (`--dest /mnt/d/WSLBackup`); they are converted for you.
 
@@ -128,7 +143,8 @@ Inside WSL you can give Linux paths (`--dest /mnt/d/WSLBackup`); they are conver
 wslbak restore
 ```
 
-restores the newest backup that passed its test restore. If a distro with the original name still
+restores the newest backup that passed its test restore; if none has passed, it offers the newest
+one and says so. If a distro with the original name still
 exists, the copy is called `<name>-restored-<date>`; pick your own with `--name`. An existing distro
 is never overwritten, changed or removed, and the restored one is not started for you.
 
@@ -142,7 +158,7 @@ WSL and run the copy in that folder:
 D:\WSLBackup\wslbak.exe restore
 ```
 
-(`D:\WSLBackup` is the default backup folder; use your own if you chose another.)
+(`D:\WSLBackup` stands for your backup folder: the one `init` proposed, or the one you chose.)
 
 **Without wslbak at all**, a backup is an ordinary archive:
 
@@ -151,7 +167,7 @@ wsl --import Ubuntu-24.04 C:\WSL\Ubuntu-24.04 D:\WSLBackup\Ubuntu-24.04\20260115
 ```
 
 A distro imported by hand logs in as root; add `[user]` and `default=<your user name>` to its
-`/etc/wsl.conf` to change that. `wslbak restore` does this for you.
+`/etc/wsl.conf` to change that. `wslbak restore` sets the default user for you.
 
 ## Bringing back single files
 
@@ -167,16 +183,20 @@ wslbak restore --path /home/me/project/notes.md --into /home/me/recovered
 
 `--path` takes a file or a folder and can be repeated. The files go into the folder given by
 `--into`, inside the distro the backup came from, with their full path recreated underneath:
-`/home/me/recovered/home/me/project/notes.md`. That folder must not exist yet, or be empty, so
-nothing you have now is ever overwritten; move the files where you want them afterwards. Owners,
-permissions, extended attributes and ACLs are preserved.
+`/home/me/recovered/home/me/project/notes.md`. That folder must not exist yet (the folder above it
+must), or be empty, so nothing you have now is ever overwritten; move the files where you want them
+afterwards. Owners, permissions, extended attributes and ACLs are preserved.
+
+Without an id, `files` looks in the newest backup whether or not it was verified, while
+`restore --path` takes the newest verified one, as `restore` does. Give both the same id when that
+matters.
 
 ## What is backed up
 
 Everything on the distro's root file system, with ownership, permissions, extended attributes, file
-capabilities, hard links and sparse files. Left out by default: `/tmp/*`, `/var/tmp/*`, and the
-`.cache` folders in home directories. Windows drives under `/mnt` are not part of the distro and are
-never included.
+capabilities, hard links and sparse files. Sockets are skipped; tar cannot store them. Left out by
+default: what is in `/tmp` and `/var/tmp` and in the `.cache` folders of home directories, and WSL's
+own `/init`. Windows drives under `/mnt` are not part of the distro and are never included.
 
 ```
 wslbak config                                         show the settings
@@ -185,12 +205,13 @@ wslbak config --keep 3 --keep-weekly 4 --keep-monthly 6
 wslbak config --at 02:30
 ```
 
-- `--exclude` takes a path pattern inside the distro; `*` matches anything. Quote it, so your shell
-  does not expand the `*` first.
-- `--keep` is the number of newest verified backups. `--keep-weekly` and `--keep-monthly` keep one
-  more per week or month on top of that. They do not make backups smaller; they spread the same
-  number of copies over a longer time. To use less space, exclude what can be downloaded again:
-  `wslbak doctor` measures the usual caches and prints the command for each.
+- `--exclude` takes a path pattern inside the distro; `*` matches anything, `/` included. Quote it,
+  so your shell does not expand the `*` first.
+- `--keep` is the number of newest verified backups. `--keep-weekly` and `--keep-monthly` also keep
+  the newest backup of each of the last n weeks or months that have one (the current week and month
+  count), so they add a few older copies. They do not make backups smaller. To use less space,
+  exclude what can be downloaded again: `wslbak doctor` measures the usual caches and prints the
+  command for each.
 - `--verify none` turns the test restore off; then the newest backups are kept regardless.
 - `--notify always` also notifies on success, so that silence means the task is not running.
 - Run `wslbak init -d <other distro>` to add another distro. One daily task covers all of them.
@@ -198,13 +219,14 @@ wslbak config --at 02:30
 The settings are stored in `%LOCALAPPDATA%\wslbak\config.json`. Each backup is three files in
 `<dest>\<distro>\`: `<id>.tar.gz`, `<id>.json` (size, SHA-256, warnings, the result of the test
 restore) and `<id>.idx.gz` (the list of files, used by `wslbak files`). The id is the UTC time of
-the backup.
+the backup. Next to the settings wslbak keeps `state.json` (the last results), `wslbak.log` and a
+lock file; `wslbak.exe` and `README-RESTORE.txt` in `<dest>` are written again on every run.
 
 ## The test restore
 
 After a backup is written, wslbak imports it with `wsl --import` as a temporary distro, runs a check
 inside it, and unregisters it again. The check confirms that the default user and their home
-directory exist, that 512 files, picked at random while the backup was being read, have the same
+directory exist (when the default user is not root), that 512 files, picked at random while the backup was being read, have the same
 SHA-256 as they had then, and that the eight largest files have the size they had (too big to hash
 every time, and the ones an importer is most likely to get wrong). Before that, the whole archive
 is read back and compared with the SHA-256 recorded when it was written. If the importer complains
@@ -226,7 +248,8 @@ at most two, so a run of failures never pushes out your good backups.
 
 A failed or unverified backup raises a Windows notification. `--webhook <url>` adds a second channel:
 [ntfy](https://ntfy.sh) topics get a plain-text message, Discord and Slack webhook URLs get their own
-JSON format. The URL is treated as a secret: only its host name is shown or logged. Notifications say
+JSON format. The URL is treated as a secret: only its host name is shown or logged (a value that is
+not a URL at all is shown back to you in the error message). Notifications say
 what kind of problem occurred but never include file names; the details stay in the log on your PC.
 
 `wslbak status` exits 1 and says so when the last success is more than two days old, when the task is
@@ -240,39 +263,51 @@ missing, or when the installed program has disappeared.
   claim file for. A test checks that no other code path can reach that call.
 - Old backups are deleted one file at a time, and only files that have a wslbak manifest next to them.
   Other files in the backup folder are left alone, even ones that look like backups. Nothing is
-  deleted in a folder that holds backups written by a newer version of wslbak.
+  deleted in a folder that holds backups written by a newer version of wslbak. The one exception is
+  wslbak's own unfinished file, `<id>.tar.gz.partial`: what an interrupted run left is removed by
+  the next run.
 - `restore` refuses a name that is in use and a folder that is not empty, for distros and for files.
-- The scripts that run inside your distro never delete anything, and use nothing beyond the shell
-  and coreutils. What you type for `--path`, `--into` and `--exclude` is never placed on a command
-  line inside the distro.
-- File names and messages that come from inside the distro are shown with control characters made
-  visible, so a file with a crafted name cannot send commands to your terminal.
+- The scripts that run inside your distro never delete anything, and use nothing beyond the shell,
+  coreutils and tar. What you type for `--path`, `--into` and `--exclude` never becomes part of a
+  command line that a shell interprets: `--path` does not enter the distro at all, and the other two
+  arrive as data and are only handed on as single arguments (to `tar --exclude=…`, and to the
+  commands that check and fill the target folder).
+- File names from inside the distro are shown with control characters made visible, in listings and
+  in the warnings of a backup, so a file with a crafted name cannot send commands to your terminal.
 - Single files only go back into the distro the backup folder belongs to, whatever the records in
-  that folder say. They are unpacked in a folder that only root can enter and moved into place when
-  everything is there, so a user inside the distro who owns the folder above the target cannot
-  redirect them by swapping the target for a link.
+  that folder say. They are unpacked in a folder that only root can enter and moved into place at
+  the end (also when unpacking stopped part-way, so that you can see what did come back), so a user
+  inside the distro who owns the folder above the target cannot redirect them by swapping the target
+  for a link.
 - Distros managed by another program (`docker-desktop*`, `rancher-desktop*`, `podman-machine-*`) and
   WSL1 distros are refused with a reason.
-- Only one wslbak works at a time; a second one exits with code 3.
+- Only one wslbak changes things at a time. A second `init`, `run`, `verify`, `config` change,
+  `restore --path` or `uninstall` exits with code 3 (a scheduled run that finds another one at work
+  simply ends). Commands that only read, and restoring a whole distro as a new one, are not held
+  back.
 
 ## How it works
 
 `wsl.exe -d <distro> -u root -e sh -s` runs a small script inside the distro. The script runs GNU `tar`
 on `/` with `--one-file-system` and writes the raw archive to stdout. On the Windows side wslbak
 compresses it with parallel gzip, hashes it, and writes `<id>.tar.gz.partial`, which is renamed only
-when tar reported success and the number of bytes received equals the number tar says it wrote.
+when tar ended without an error that matters and the number of bytes received equals the number tar
+says it wrote. (Files that changed or disappeared while they were read are normal on a running
+system; they are reported as warnings.)
 
 One field of tar's output is filled in on the way. For a file of 8 GiB or more, GNU tar records the
 size only in an extended header and leaves the size in the file's own header at zero. The importer
 that ships with WSL 2.7 (bsdtar 3.7.7) believes the zero: such a file comes back empty, and
-`wsl --import` still reports success. wslbak writes the real size into that header as well, so the
-archive restores correctly there too. Nothing else is changed, and the archive stays a valid tar.
+`wsl --import` still reports success. wslbak writes the real size into that header as well (and
+corrects the header's checksum to match), so the archive restores correctly there too. Nothing else
+is changed, and the archive stays a valid tar.
 
 The scheduled task belongs to your Windows account and runs with your sign-in session. It starts a
 windowless copy of the program kept in `%LOCALAPPDATA%\Programs\wslbak`, so it does not depend on Node
 or on anything inside a distro. The task is set to run as soon as possible after a missed start and
-again ten minutes after you sign in; the program then skips the run if a backup succeeded within the
-last 20 hours.
+again ten minutes after you sign in (where Windows does not let your account create the sign-in
+trigger, only the daily start is set); the program then skips the run if a backup succeeded within
+the last 20 hours.
 
 ## Limitations
 
@@ -294,8 +329,10 @@ last 20 hours.
 - **Every backup is a full copy.** There is no incremental mode yet.
 - **GNU tar is required inside the distro.** A distro with BusyBox tar (Alpine as it comes) or with no
   tar (openSUSE Tumbleweed as it comes) is refused, with the command that installs it.
-- **Only what is on the root file system.** A folder mounted from another disk is skipped, and
-  `wslbak run` names it.
+- **Only what is on the root file system.** A folder mounted from another disk is skipped.
+  `wslbak run` names it when it holds a Linux file system (ext4, xfs, btrfs and the like) and is
+  mounted outside `/mnt/wsl`; network shares, FAT and NTFS drives and disks attached with
+  `wsl --mount` are skipped without a message.
 - **The test restore needs free space** on the drive holding `%LOCALAPPDATA%`, up to about the size of
   the distro's files. When there is not enough, the backup is kept, reported as not verified, and the
   exit code is 1.
@@ -318,7 +355,8 @@ last 20 hours.
 
 Start with `wslbak doctor`.
 
-- **Where is the log?** `%LOCALAPPDATA%\wslbak\wslbak.log`, in English. Add `--debug` to see it live.
+- **Where is the log?** `%LOCALAPPDATA%\wslbak\wslbak.log`. It is in English, except for the messages
+  that are also shown to you, which are in your interface language. Add `--debug` to see it live.
 - **Windows refuses to start the program.** The executables are not code-signed. Smart App Control
   blocks unsigned programs outright, and wslbak cannot run while it is on; AppLocker or WDAC policies
   can do the same on managed PCs.
@@ -331,10 +369,10 @@ Start with `wslbak doctor`.
   Restore it from the antivirus history, then run `wslbak init` again to put the files back.
 - **"Cannot write to …" during init.** With Controlled folder access on, allow the program in Windows
   Security or choose a folder that is not protected.
-- **`.exe` files stop working inside WSL ("Exec format error") after a Fedora distro stops.** This is
-  not caused by wslbak: when a Fedora 44 distro shuts down, it clears a kernel setting that all your
-  distros share. It can show up after a backup because a backup starts a stopped distro, which then
-  stops again. `wsl --shutdown` fixes it, or, without restarting, from a Windows terminal:
+- **`.exe` files stop working inside WSL ("Exec format error") after another distro stops.** This is
+  not caused by wslbak: some distros clear a kernel setting that all your distros share when they
+  shut down. It has been seen with Fedora 44 and openSUSE Tumbleweed. It can show up after a backup
+  because a backup starts a stopped distro, which then stops again. `wsl --shutdown` fixes it, or, without restarting, from a Windows terminal:
   `wsl -u root sh -c "echo ':WSLInterop:M::MZ::/init:P' > /proc/sys/fs/binfmt_misc/register"`.
 - **"cannot run Windows programs" inside WSL.** Windows interop is disabled; check `[interop]` in
   `/etc/wsl.conf`, or use wslbak from Windows instead.
@@ -351,7 +389,7 @@ reporting a vulnerability.
 
 ```
 npm test         # go vet plus unit tests
-npm run build    # builds the four executables in bin/
+npm run build    # builds the four executables in bin/ (and a helper for the tests)
 npm run e2e      # end-to-end tests inside WSL, against a throwaway distro and a sandbox folder
 npm run dist     # release zips, checksums, and winget and scoop manifests in dist/
 ```
@@ -359,7 +397,8 @@ npm run dist     # release zips, checksums, and winget and scoop manifests in di
 `bash scripts/demo.sh` makes the tour at the top of this page again: it installs the packed npm
 package and a demo distro, runs the commands for real (the real settings folder, scheduled task
 and default folders, so it refuses to start on a PC where wslbak is set up), records what they
-print, draws the recording and removes what it created. It needs a Python with Pillow on Windows.
+print, draws the recording and removes what it created. It needs `npm run build` to have run,
+python3 inside WSL, a Python with Pillow on Windows and, for the video file, ffmpeg.
 
 `npm run e2e` creates a Debian distro named `wslbak-e2e-<random>` on first use; set
 `KEEP_E2E_DISTRO=1` to keep it for the next run, and remove it with `scripts/e2e-distro.sh destroy`.
@@ -367,7 +406,8 @@ Set `E2E_DISTRO` to test another family (`FedoraLinux-44`, `archlinux`, `openSUS
 `alpine`, …), or `E2E_ROOTFS_URL` to import a root file system that `wsl --install` does not offer.
 `E2E_FAST=1` leaves out the parts that only exercise Windows, and `E2E_TOAST=1` adds a check that
 shows a real notification. Two slower scripts are run by hand: `scripts/e2e-scale.sh` (millions of
-files, a file over 8 GiB) and `scripts/e2e-services.sh` (a busy Docker Engine and databases). The
+files, a file over 8 GiB) and `scripts/e2e-services.sh` (a busy Docker Engine and SQLite databases
+that are being written). The
 tests never touch another distro or your real wslbak settings.
 
 The tests reach a few situations through switches that only work together with the sandbox option
@@ -375,8 +415,9 @@ The tests reach a few situations through switches that only work together with t
 build script falls back to `go.exe` on Windows; set the `GO` environment variable to point somewhere
 else.
 
-All interface text lives in `i18n.go`, once per language. Add or change both when you touch a message;
-the tests check that nothing is missing.
+The program's interface text lives in `i18n.go`, once per language. Add or change both when you
+touch a message; the tests check that nothing is missing. (The npm launcher, `bin/wslbak.js`, has a
+few messages of its own.)
 
 ## License
 

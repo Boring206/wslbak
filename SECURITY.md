@@ -10,7 +10,8 @@ and what happened. You can expect a first answer within a week.
 
 - It runs `tar` as **root inside your distro**, to read every file. The scripts it runs there are
   part of the program (`backup.sh`, `probe.sh`, `check.sh`, `caches.sh`, `restorefiles.sh`); they use
-  only the shell and coreutils, and what you type never reaches a command line inside the distro.
+  only the shell, coreutils and tar. What you type never becomes part of a command line that a shell
+  interprets: it arrives as data and is only handed on as single arguments to those commands.
 - It registers a scheduled task for **your own Windows account** and needs no administrator rights.
 - It can unregister a distro and delete a folder recursively in exactly one place (`fence.go`), and
   only for a temporary distro it created itself. A test checks that no other code can reach that.
