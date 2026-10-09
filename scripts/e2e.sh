@@ -337,7 +337,7 @@ expect_rc 0 "and plans a restore from them"
 expect_has "$DISTRO-restored-" "under a new name"
 run_kit init -d "$DISTRO" --yes
 expect_rc 2 "but it cannot be used to set up backups"
-expect_has "installed with npm" "and says where to run init from"
+expect_has "from an installed wslbak" "and says where to run init from"
 
 section "12. A distro whose tar is not GNU tar is refused"
 sh_in "$DISTRO" '

@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
+PackageIdentifier: Boring206.wslbak
+PackageVersion: {{VERSION}}
+InstallerType: zip
+NestedInstallerType: portable
+# The scheduled task runs wslbakw.exe, which sits next to wslbak.exe in the archive. Putting
+# the install folder itself on PATH (instead of a symlink elsewhere) keeps the two together.
+ArchiveBinariesDependOnPath: true
+NestedInstallerFiles:
+  - RelativeFilePath: wslbak.exe
+    PortableCommandAlias: wslbak
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/Boring206/wslbak/releases/download/v{{VERSION}}/wslbak-{{VERSION}}-windows-x64.zip
+    InstallerSha256: {{SHA256_X64}}
+  - Architecture: arm64
+    InstallerUrl: https://github.com/Boring206/wslbak/releases/download/v{{VERSION}}/wslbak-{{VERSION}}-windows-arm64.zip
+    InstallerSha256: {{SHA256_ARM64}}
+ManifestType: installer
+ManifestVersion: 1.10.0

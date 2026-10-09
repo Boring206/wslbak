@@ -46,6 +46,7 @@
     "build": "node scripts/build.mjs",
     "test": "node scripts/build.mjs --test",
     "e2e": "bash scripts/e2e.sh",
+    "dist": "node scripts/build.mjs && node scripts/build.mjs --dist",
     "prepack": "node scripts/build.mjs --test && node scripts/build.mjs"
   }
 }

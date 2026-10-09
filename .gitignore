@@ -2,3 +2,4 @@ bin/*.exe
 *.tgz
 node_modules/
 local/
+dist/
