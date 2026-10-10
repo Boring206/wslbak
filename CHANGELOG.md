@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+Two safeguards against a run that never ends. Before, such a run meant that backups stopped without
+any notification: the stuck run could not report anything, and every later scheduled run found it
+still holding the lock and ended quietly.
+
+- A scheduled run that finds another wslbak still running after 20 hours now fails (exit code 2) and
+  notifies you that a backup has been running for that many hours and is probably stuck. A run
+  started by hand says so too.
+- When a WSL command can neither finish nor be ended (which can happen when WSL as a whole stops
+  answering), wslbak stops waiting about half a minute after the command's time limit and reports
+  the failure, instead of waiting for ever.
+
 ## 0.1.1
 
 Four small corrections, found by checking every statement of the README against the code. Backups

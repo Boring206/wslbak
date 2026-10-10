@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"net/http"
@@ -70,9 +71,14 @@ func toast(title, body string) error {
 	cmd.Stdin = strings.NewReader(toastScript)
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
 	cmd.WaitDelay = waitDelay
-	out, err := cmd.CombinedOutput()
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	err := runBounded(ctx, cmd)
+	if errors.Is(err, errWontEnd) {
+		return fmt.Errorf("powershell: %w", err)
+	}
 	if err != nil {
-		return fmt.Errorf("powershell: %w: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("powershell: %w: %s", err, strings.TrimSpace(out.String()))
 	}
 	return nil
 }

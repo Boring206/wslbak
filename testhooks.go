@@ -27,7 +27,21 @@ const (
 	envTestStallSeconds = "WSLBAK_TEST_STALL_SECONDS"
 	// 從 distro 讀資料的速度上限（MiB／秒），讓一次備份久到來得及在途中做別的事。
 	envTestReadRate = "WSLBAK_TEST_READ_MIB_PER_SECOND"
+	// 把「握著鎖的那個 wslbak 已經跑了多久」多算這麼多小時，測試才不必真的等上一天。
+	envTestLockAgeHours = "WSLBAK_TEST_LOCK_AGE_HOURS"
 )
+
+// testLockAge 見 envTestLockAgeHours。
+func testLockAge() time.Duration {
+	if homeOverride == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(os.Getenv(envTestLockAgeHours))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Hour
+}
 
 // fullAfterWriter 讓前 left 個位元組照常寫入，之後回報磁碟已滿。
 type fullAfterWriter struct {

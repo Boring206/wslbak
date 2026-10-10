@@ -613,7 +613,7 @@ const server = http.createServer((req, res) => {
   let body = "";
   req.on("data", (chunk) => (body += chunk));
   req.on("end", () => {
-    fs.appendFileSync(process.argv[1], JSON.stringify({ url: req.url, title: req.headers.title, body }) + "\n");
+    fs.appendFileSync(process.argv[1], JSON.stringify({ at: new Date().toISOString().slice(11, 23), url: req.url, title: req.headers.title, body }) + "\n");
     res.end("ok");
   });
 });
@@ -643,6 +643,51 @@ if [ -n "$HOOK_PORT" ] && win "$SYS32/curl.exe" -s -m 5 -o NUL "http://localhost
 	expect_true "and the message names no file" bash -c "! grep -q -e 'tar\.gz' -e 'partial' -e 'wslbak-fixture' '$HOOK_LOG'"
 	run status
 	expect_has "Problem in the latest run" "status shows the failed run"
+	# A run that still holds the lock a day later is probably stuck (a WSL that has stopped
+	# answering can leave it waiting for ever). It cannot say so itself, so the scheduled run
+	# that finds it does, instead of leaving quietly as it does for a run that is merely in
+	# progress. The first run here is only slowed down; the later ones are told that it has
+	# been going for 30 hours.
+	: >"$HOOK_LOG"
+	ensure_interop
+	env WSLBAK_TEST_READ_MIB_PER_SECOND=4 WSLENV="${WSLENV:+$WSLENV:}WSLBAK_TEST_READ_MIB_PER_SECOND" \
+		timeout 600 "${WB[@]}" run --no-verify >"$SANDBOX/long.log" 2>&1 </dev/null &
+	LONG_PID=$!
+	for _ in $(seq 1 300); do
+		[ -n "$(find "$DEST/$DISTRO" -name '*.partial' 2>/dev/null)" ] && break
+		sleep 0.2
+	done
+	run run --scheduled
+	expect_rc 0 "a scheduled run that finds another run in progress leaves quietly"
+	expect_true "without a notification" [ ! -s "$HOOK_LOG" ]
+	if [ -s "$HOOK_LOG" ]; then
+		# Seen with Avast: its automatic sandbox runs a second, isolated copy of a program it
+		# does not know, with the same arguments. That copy cannot reach WSL, fails, and sends
+		# a notification of its own, while nothing of it appears in the log.
+		echo "  what arrived, what the scheduled run printed, and the end of the log:"
+		sed 's/^/    hook: /' "$HOOK_LOG"
+		printf '%s\n' "$OUT" | sed 's/^/    out:  /'
+		tail -n 12 "$HOME_DIR/wslbak.log" | tr -d '\r' | sed 's/^/    log:  /'
+		find "$DEST/$DISTRO" -maxdepth 1 -printf '    dest: %f %s\n' | tail -n 8
+		echo "    now:  $(date -u +%H:%M:%S.%N | cut -c1-12)"
+		tr -d '\r' <"$SANDBOX/long.log" | sed 's/^/    long: /' | tail -n 12
+		SHOW_LONG=1
+	fi
+	run_with WSLBAK_TEST_LOCK_AGE_HOURS=30 -- run --scheduled
+	expect_rc 2 "when the other run has been going for 30 hours, the scheduled run fails instead"
+	expect_true "and a notification says that a backup has been running for 30 hours" grep -q 'running for 30 hours' "$HOOK_LOG"
+	expect_true "the log says so too" grep -q 'has been running for 30 hours and is probably stuck' "$HOME_DIR/wslbak.log"
+	run_with WSLBAK_TEST_LOCK_AGE_HOURS=30 -- run
+	expect_rc 3 "a run started by hand still exits 3"
+	expect_has "probably stuck" "and adds that the other run is probably stuck"
+	wait "$LONG_PID"
+	expect_true "the slowed-down run finished normally" [ $? = 0 ]
+	if [ -n "${SHOW_LONG:-}" ]; then
+		echo "  after the slowed-down run ended:"
+		tr -d '\r' <"$SANDBOX/long.log" | sed 's/^/    long: /' | tail -n 12
+		sed 's/^/    hook: /' "$HOOK_LOG"
+		tail -n 14 "$HOME_DIR/wslbak.log" | tr -d '\r' | sed 's/^/    log:  /'
+	fi
 	run config --webhook off --notify failure
 	expect_rc 0 "the webhook is removed again"
 	run run --no-verify

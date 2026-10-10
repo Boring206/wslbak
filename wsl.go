@@ -48,6 +48,41 @@ const createNoWindow = 0x08000000
 // （實際遇過：防毒軟體把程式關進沙箱時，wsl.exe 的呼叫就是這樣卡住的）。
 const waitDelay = 5 * time.Second
 
+// killGrace：逾時把子行程結束掉、也不等它的輸出之後，再等這麼久它還在就不等了。
+// 卡在核心裡的行程是結束不掉的（WSL 整個不回應時，wsl.exe 可能就停在那裡）；
+// 一直等下去的話，我們自己也跟著卡住，握著鎖又不發通知，之後每天的排程都會安靜地跳過。
+const killGrace = 30 * time.Second
+
+// errWontEnd：子行程被要求結束了，卻一直沒有結束。
+var errWontEnd = errors.New("the program was told to stop but did not end")
+
+// waitBounded 等 wait 回來。ctx 結束之後最多再等 grace；到時還沒回來就回傳 errWontEnd，
+// 不再等它（那個 goroutine 會留著，呼叫端接下來應該回報失敗並結束）。
+func waitBounded(ctx context.Context, wait func() error, grace time.Duration) error {
+	done := make(chan error, 1)
+	go func() { done <- wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(grace):
+		return errWontEnd
+	}
+}
+
+// runBounded 和 cmd.Run 一樣，但不會無限期等一個結束不掉的子行程。
+// cmd 必須是用 ctx 建立的（exec.CommandContext），並且設了 WaitDelay。
+func runBounded(ctx context.Context, cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return waitBounded(ctx, cmd.Wait, cmd.WaitDelay+killGrace)
+}
+
 type distroInfo struct {
 	Name    string
 	Running bool
@@ -110,7 +145,11 @@ func runSystem(ctx context.Context, stdin string, exe string, args ...string) ([
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
-	err := cmd.Run()
+	err := runBounded(ctx, cmd)
+	if errors.Is(err, errWontEnd) {
+		// 子行程還在，輸出的緩衝區不能再碰。
+		return nil, err
+	}
 	if ctx.Err() != nil {
 		err = ctx.Err()
 	}
@@ -189,6 +228,7 @@ type distroStream struct {
 	// Stdout 是腳本寫出的原始資料，前面墊了一層大緩衝：管線一次只給大約 4 KB。
 	Stdout *bufio.Reader
 
+	ctx        context.Context
 	cmd        *exec.Cmd
 	stderrDone chan struct{}
 }
@@ -202,6 +242,7 @@ func startInDistro(ctx context.Context, distro, script string, onStderr func(lin
 	cmd.Env = append(os.Environ(), "WSL_UTF8=1")
 	cmd.Stdin = strings.NewReader(lfOnly(script))
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
+	cmd.WaitDelay = waitDelay
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -215,6 +256,7 @@ func startInDistro(ctx context.Context, distro, script string, onStderr func(lin
 	}
 	s := &distroStream{
 		Stdout:     bufio.NewReaderSize(stdout, 1<<20),
+		ctx:        ctx,
 		cmd:        cmd,
 		stderrDone: make(chan struct{}),
 	}
@@ -238,8 +280,10 @@ func startInDistro(ctx context.Context, distro, script string, onStderr func(lin
 
 // Wait 等腳本結束並回傳結束碼。呼叫前要先把 Stdout 讀完，或取消 context。
 func (s *distroStream) Wait() (int, error) {
-	<-s.stderrDone
-	err := s.cmd.Wait()
+	err := waitBounded(s.ctx, func() error {
+		<-s.stderrDone
+		return s.cmd.Wait()
+	}, waitDelay+killGrace)
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		return exit.ExitCode(), nil
@@ -293,7 +337,11 @@ func importDistro(ctx context.Context, name, dir, source string, stdin io.Reader
 	out := &cappedBuffer{limit: 64 << 10}
 	cmd.Stdout = out
 	cmd.Stderr = out
-	err := cmd.Run()
+	err := runBounded(ctx, cmd)
+	if errors.Is(err, errWontEnd) {
+		// wsl.exe 還在，輸出的緩衝區不能再碰。
+		return &wslError{Op: "--import", Err: err}
+	}
 	text := strings.TrimSpace(decodeWSLText(out.buf.Bytes()))
 	if err != nil {
 		if ctx.Err() != nil {

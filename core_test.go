@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/xml"
@@ -1399,5 +1400,65 @@ func TestPrivate(t *testing.T) {
 		func(n string) bool { return dirs[n] }, func(n string) bool { return ours[n] })
 	if want := []string{"Photos", "notes.txt"}; !slices.Equal(got, want) {
 		t.Errorf("foreign entries = %q, want %q", got, want)
+	}
+}
+
+// 結束不掉的子行程：等到期限就放手，不能跟著永遠等下去。
+func TestWaitBounded(t *testing.T) {
+	boom := errors.New("boom")
+	// 自己結束的，原樣回傳它的結果。
+	if err := waitBounded(context.Background(), func() error { return boom }, time.Hour); err != boom {
+		t.Errorf("a program that ends by itself: got %v, want its own error", err)
+	}
+	// 被要求結束之後在期限內結束的，也回傳它的結果。
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := waitBounded(ctx, func() error { time.Sleep(20 * time.Millisecond); return boom }, 5*time.Second); err != boom {
+		t.Errorf("a program that ends soon after being stopped: got %v, want its own error", err)
+	}
+	// 一直不結束的：過了期限就回傳 errWontEnd，而且確實等了那麼久。
+	never := make(chan struct{})
+	defer close(never)
+	began := time.Now()
+	err := waitBounded(ctx, func() error { <-never; return nil }, 80*time.Millisecond)
+	if !errors.Is(err, errWontEnd) {
+		t.Errorf("a program that never ends: got %v, want errWontEnd", err)
+	}
+	if waited := time.Since(began); waited < 80*time.Millisecond || waited > 3*time.Second {
+		t.Errorf("waited %v for a program that never ends, want about 80ms", waited)
+	}
+	// 還沒被要求結束的，不管多久都繼續等（備份本來就可以跑很久）。
+	slow := make(chan error, 1)
+	go func() {
+		slow <- waitBounded(context.Background(), func() error { time.Sleep(150 * time.Millisecond); return nil }, time.Millisecond)
+	}()
+	select {
+	case err := <-slow:
+		if err != nil {
+			t.Errorf("a slow program that was never stopped: got %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("waitBounded did not return after the program ended")
+	}
+}
+
+// 鎖檔裡的開始時間：只認我們自己寫的格式，其他一律當作不知道。
+func TestLockStamp(t *testing.T) {
+	began := time.Date(2026, 10, 10, 19, 30, 0, 0, time.UTC)
+	stamp := []byte(began.Format(time.RFC3339))
+	if len(stamp) != lockStampLen {
+		t.Fatalf("a stamp is %d bytes, lockStampLen says %d", len(stamp), lockStampLen)
+	}
+	if got, ok := parseLockStamp(stamp); !ok || !got.Equal(began) {
+		t.Errorf("parseLockStamp(%q) = %v, %v", stamp, got, ok)
+	}
+	for _, bad := range [][]byte{nil, {}, make([]byte, lockStampLen), []byte("2026-10-10T19:30:00"), []byte("not a time at all!!!")} {
+		if _, ok := parseLockStamp(bad); ok {
+			t.Errorf("parseLockStamp(%q) was accepted", bad)
+		}
+	}
+	// 20 小時的門檻要比一天短，隔天同一時間的排程才看得到。
+	if stuckAfter >= 24*time.Hour {
+		t.Errorf("stuckAfter is %v; the next day's run starts just under 24 hours later and would not notice", stuckAfter)
 	}
 }

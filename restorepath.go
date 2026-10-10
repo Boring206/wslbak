@@ -313,7 +313,7 @@ func cmdRestorePath(opts options) int {
 		pipeW.CloseWithError(err)
 		walked <- err
 	}()
-	runErr := cmd.Run()
+	runErr := runBounded(ctx, cmd)
 	// tar 先結束的話（例如出錯），讓還在寫的那一端跟著停下來。
 	pipeR.CloseWithError(io.ErrClosedPipe)
 	walkErr := <-walked
@@ -322,6 +322,10 @@ func cmdRestorePath(opts options) int {
 
 	var problem error
 	switch {
+	case errors.Is(runErr, errWontEnd):
+		// wsl.exe 還在，它的輸出不能再碰；WSL 既然不回應，後面搬動的步驟也不必試了。
+		logf("restore --path: tar in %s did not end after it was stopped", d.Name)
+		return fail(fmt.Errorf(T.PathFailed, runErr.Error()))
 	case runErr != nil:
 		logf("restore --path: tar in %s failed: %v: %s", d.Name, runErr, tarOut.String())
 		problem = fmt.Errorf(T.PathFailed, plain(firstLine(tarOut.String())))
