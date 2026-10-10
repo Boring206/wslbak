@@ -47,7 +47,7 @@ jobs:
           if (-not $version) { $version = (gh release view -R $env:GITHUB_REPOSITORY --json tagName -q .tagName).TrimStart('v') }
           if ($version -notmatch '^\d+\.\d+\.\d+$') { Write-Error "not a version: $version"; exit 1 }
           "version=$version" >> $env:GITHUB_OUTPUT
-          "Installing wslbak $version: $env:WAYS"
+          "Installing wslbak ${version}: $env:WAYS"
           if ($env:WAYS -notmatch '^(npm|zip|scoop|winget)( (npm|zip|scoop|winget))*$') { Write-Error "ways must be some of: npm zip scoop winget"; exit 1 }
 
       - name: "npm: from the registry"
