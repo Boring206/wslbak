@@ -660,15 +660,21 @@ else
 	rm -f "$HOME_DIR/state.json"
 	LAST_BEFORE="$(newest_backup)"
 	RUNS_BEFORE="$(grep -c 'scheduled=true' "$HOME_DIR/wslbak.log" 2>/dev/null)"
+	# The runner with Microsoft Defender switched on has twice stopped answering in this
+	# section, and a runner that does so loses its log. The marks say how far it got.
+	crumb "13e: asking Windows for the time and the power source"
 	# A whole minute between 75 and 135 seconds from now, by the Windows clock.
 	AT="$(win "$PS" -NoProfile -Command "(Get-Date).AddSeconds(135).ToString('HH:mm')" </dev/null 2>/dev/null | tr -d '\r')"
 	POWER="$(win "$PS" -NoProfile -Command "(Get-CimInstance Win32_Battery | Select-Object -First 1).BatteryStatus" </dev/null 2>/dev/null | tr -d '\r')"
+	crumb "13e: moving the daily time to $AT"
 	run config --at "$AT"
 	expect_rc 0 "the daily time is moved to $AT, about two minutes away"
-	for _ in $(seq 1 420); do
+	for i in $(seq 1 420); do
 		[ "$(newest_backup)" != "$LAST_BEFORE" ] && grep -q '"lastResult": "ok"' "$HOME_DIR/state.json" 2>/dev/null && break
+		[ $((i % 20)) -eq 0 ] && crumb "13e: waited $i s for $AT; log: $(tail -n 1 "$HOME_DIR/wslbak.log" 2>/dev/null | tr -d '\r' | cut -c1-90)"
 		sleep 1
 	done
+	crumb "13e: done waiting"
 	expect_true "a backup appeared without anybody starting the task" [ "$(newest_backup)" != "$LAST_BEFORE" ]
 	expect_true "it was the scheduled run" [ "$(grep -c 'scheduled=true' "$HOME_DIR/wslbak.log" 2>/dev/null)" -gt "${RUNS_BEFORE:-0}" ]
 	expect_true "and it succeeded" grep -q '"lastResult": "ok"' "$HOME_DIR/state.json"
