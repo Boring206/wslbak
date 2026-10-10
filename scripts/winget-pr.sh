@@ -31,8 +31,9 @@ me="$(gh api user -q .login)"
 fork="$me/winget-pkgs"
 branch="$id-$version"
 
+# The run names itself "installs <version>: <ways>, winget from <manifest or source>".
 checked="$(gh run view "$run" -R "$repo" --json workflowName,displayTitle,conclusion,url)"
-if [ "$(jq -r '.workflowName + "|" + .displayTitle + "|" + .conclusion' <<<"$checked")" != "installs|installs $version, winget from manifest|success" ]; then
+if ! [[ "$(jq -r '.workflowName + "|" + .conclusion + "|" + .displayTitle' <<<"$checked")" =~ ^installs\|success\|installs\ ${version//./\\.}:\ .*winget.*,\ winget\ from\ manifest$ ]]; then
 	echo "Run $run is not a successful run of the installs workflow for $version with winget from the manifest:" >&2
 	jq . <<<"$checked" >&2
 	exit 1

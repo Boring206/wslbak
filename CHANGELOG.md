@@ -1,9 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.1.1
 
-Found by checking every statement of the README against the code:
+Four small corrections, found by checking every statement of the README against the code. Backups
+and restores work as in 0.1.0.
 
+- wslbak can be installed with Scoop: `scoop bucket add boring206 https://github.com/Boring206/scoop-bucket`,
+  then `scoop install wslbak`.
 - `wslbak doctor` suggested an exclude pattern for the yarn cache that did not match the folder it
   had measured.
 - `README-RESTORE.txt`, which is written into the backup folder, said a backup is two files; it is
