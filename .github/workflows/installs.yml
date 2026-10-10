@@ -1,10 +1,11 @@
 # Installs a released version in each of the ways the README offers, from where users get
-# it: npm, the zip on the Releases page, the scoop bucket and winget. Nothing is built here.
+# it: npm, the zip on the Releases page and the scoop bucket. Nothing is built here.
 # It is started by hand after a release (see RELEASING.md).
 #
-# winget has two modes. "manifest" installs from the manifest files in the release, which is
-# the test that a pull request to microsoft/winget-pkgs asks for; "source" installs from the
-# public winget source, which works once that pull request is merged.
+# winget is a fourth way that is checked only when asked for (ways: winget), because wslbak
+# has not been submitted to winget. "manifest" installs from the manifest files in the
+# release, which is the test that a pull request to microsoft/winget-pkgs asks for; "source"
+# installs from the public winget source, which would work once such a pull request is merged.
 name: installs
 run-name: "installs ${{ inputs.version || 'the newest release' }}: ${{ inputs.ways }}, winget from ${{ inputs.winget }}"
 
@@ -15,9 +16,9 @@ on:
         description: "Released version, without the v (empty: the newest release)"
         type: string
       ways:
-        description: "Which ways to check; leave one out while it does not have the version yet"
+        description: "Which ways to check, of: npm zip scoop winget"
         type: string
-        default: npm zip scoop winget
+        default: npm zip scoop
       winget:
         description: "winget: from the manifest files in the release, or from the public source"
         type: choice
