@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Opens the pull request that offers a released version to winget (microsoft/winget-pkgs).
+# Not used so far: wslbak has not been submitted to winget (see RELEASING.md), and this script
+# has never been run to the end.
 #
 #   scripts/winget-pr.sh <version> <id of a successful run of the installs workflow for it>
 #
@@ -19,7 +21,7 @@ set -euo pipefail
 version="${1:-}"
 run="${2:-}"
 if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$run" =~ ^[0-9]+$ ]]; then
-	sed -n '2,4p' "$0" >&2
+	sed -n '2,6p' "$0" >&2
 	exit 2
 fi
 
@@ -33,7 +35,7 @@ branch="$id-$version"
 
 # The run names itself "installs <version>: <ways>, winget from <manifest or source>".
 checked="$(gh run view "$run" -R "$repo" --json workflowName,displayTitle,conclusion,url)"
-if ! [[ "$(jq -r '.workflowName + "|" + .conclusion + "|" + .displayTitle' <<<"$checked")" =~ ^installs\|success\|installs\ ${version//./\\.}:\ .*winget.*,\ winget\ from\ manifest$ ]]; then
+if ! [[ "$(jq -r '.workflowName + "|" + .conclusion + "|" + .displayTitle' <<<"$checked")" =~ ^installs\|success\|installs\ ${version//./\\.}:\ .*winget,\ winget\ from\ manifest$ ]]; then
 	echo "Run $run is not a successful run of the installs workflow for $version with winget from the manifest:" >&2
 	jq . <<<"$checked" >&2
 	exit 1

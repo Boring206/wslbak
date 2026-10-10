@@ -15,8 +15,6 @@ What a release relies on, for checking it or for doing it again after a move.
 4. **Private vulnerability reporting is on**: repository Settings → Code security.
 5. **The scoop bucket** is the repository `Boring206/scoop-bucket`. Its own workflow keeps it up to
    date.
-6. **A fork of `microsoft/winget-pkgs`** in your account, for the pull requests to winget.
-   `scripts/winget-pr.sh` makes it when it is missing.
 
 ## Every release
 
@@ -30,11 +28,20 @@ What a release relies on, for checking it or for doing it again after a move.
    off after 60 days without a commit in its repository; `gh workflow enable bucket -R Boring206/scoop-bucket`
    switches it back on.
 5. **Check the installations**: `gh workflow run installs -f version=0.1.1`. It installs that
-   version from npm, from the zip on the Releases page, from the scoop bucket, and with winget from
-   the manifest files in the release. `-f ways="zip scoop winget"` leaves one out.
-6. **winget**: `scripts/winget-pr.sh 0.1.1 <id of that run>` opens the pull request to
-   `microsoft/winget-pkgs`. Once it is merged, `gh workflow run installs -f version=0.1.1 -f winget=source`
-   installs from winget the way users do.
+   version from npm, from the zip on the Releases page and from the scoop bucket.
+   `-f ways="zip scoop"` checks only some of them.
+
+## winget
+
+wslbak has not been submitted to winget: a pull request to `microsoft/winget-pkgs` needs the
+contributor to accept Microsoft's contributor licence agreement, and that was put off. What is
+ready for the day it is wanted:
+
+- Every release contains the three manifest files, in `package-manifests.zip`.
+- `gh workflow run installs -f version=<version> -f ways=winget` validates them and installs from
+  them on a Windows runner. That has been done for 0.1.0.
+- `scripts/winget-pr.sh <version> <id of that run>` is meant to open the pull request, from a fork
+  of `microsoft/winget-pkgs` in your account. It has never been run, so expect to correct it.
 
 ## Code signing
 
