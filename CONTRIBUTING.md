@@ -20,6 +20,13 @@ removes both. See the top of `scripts/e2e.sh` for the switches (`E2E_DISTRO`, `E
 `E2E_FAST`, `E2E_TOAST`), and `scripts/e2e-scale.sh` and `scripts/e2e-services.sh` for the two
 slower scripts.
 
+Antivirus that puts unknown programs into a sandbox gets in the way of the suite on a developer
+PC. With Avast, executables that had just been built were run a second time in isolation at every
+start, which sends notifications the tests do not expect, and twice WSL stopped starting Windows
+programs until `wsl --shutdown`. Either add the project folder and `%LOCALAPPDATA%\wslbak-e2e` to
+the antivirus exceptions, or let GitHub run the suite: push a branch and start the `e2e` workflow
+on it with `gh workflow run e2e --ref <branch>`.
+
 Before sending a change, please also run what the `lint` job runs: `gofmt -l .`, `staticcheck`,
 `govulncheck` and `shellcheck` (the commands are in `.github/workflows/test.yml`).
 

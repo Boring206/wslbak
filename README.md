@@ -260,6 +260,9 @@ JSON format. The URL is treated as a secret: only its host name is shown or logg
 not a URL at all is shown back to you in the error message). Notifications say
 what kind of problem occurred but never include file names; the details stay in the log on your PC.
 
+A scheduled run that finds another wslbak still running after 20 hours raises a notification too,
+because a run that is stuck cannot (see [Safeguards](#safeguards)).
+
 `wslbak status` exits 1 and says so when the last success is more than two days old, when the task is
 missing, or when the installed program has disappeared.
 
@@ -363,9 +366,15 @@ the last 20 hours.
   Oracle Linux 7, 8 and 9, Arch Linux, openSUSE Tumbleweed, Kali, Gentoo, NixOS and Alpine 3.24
   (GNU tar 1.26 to 1.35); with WSL 2.7 and 3.0; on Windows 11 (build 26300), Windows Server 2025
   (build 26100) and Windows Server 2022 (build 20348, the generation of Windows 10); and with
-  Avast and with Microsoft Defender's real-time protection switched on. With Defender on, the suite
-  has passed twice; two other runs on that test machine stopped responding (the second while it
-  waited for the task to start by itself), and the cause is not known yet. The arm64 executables
+  Avast and with Microsoft Defender's real-time protection switched on, each with a caveat. With
+  Avast the suite has passed many times, but see under [Troubleshooting](#troubleshooting) what its
+  sandbox did. Defender is switched on in the middle of a job on GitHub's test machines, which
+  otherwise run without it. Of 65 such runs of the suite, 59 passed; in one, a scheduled backup was
+  written but not recorded as a success, and the log that would say why was not kept; and 5 ended
+  because the whole machine froze (it stopped answering and then lost its connection), two of them
+  before wslbak had started. The freezing is put down to those machines, not to wslbak: of 54
+  machines of the same kind that only set WSL up, with no wslbak on them, one froze as well, while
+  108 machines that switched Defender on and did not use WSL all kept running. The arm64 executables
   start and pass the unit tests on arm64 Windows, where no WSL was available to back up. Not tried
   yet: Windows 10 itself, a PC with Docker Desktop, and distros of 100 GB or more; reports are
   welcome.
@@ -379,11 +388,17 @@ Start with `wslbak doctor`.
 - **Windows refuses to start the program.** The executables are not code-signed. Smart App Control
   blocks unsigned programs outright, and wslbak cannot run while it is on; AppLocker or WDAC policies
   can do the same on managed PCs.
-- **Antivirus holds the program the first time it runs.** Some products (Avast and AVG, for example)
-  check a program they have never seen before for a while, or run it in a sandbox, and inside a
-  sandbox wslbak cannot talk to WSL. `init` therefore starts the installed program once while you are
-  there. If scheduled backups never run, add `%LOCALAPPDATA%\Programs\wslbak` to the antivirus
-  exceptions. Do not turn the antivirus off.
+- **Antivirus holds the program, or runs a second copy of it.** Some products (Avast and AVG, for
+  example) check a program they have never seen before for a while, or run it in a sandbox, and
+  inside a sandbox wslbak cannot talk to WSL. `init` therefore starts the installed program once
+  while you are there. On a PC with Avast, with executables that had just been built there, two more
+  things were seen. Avast ran an isolated second copy at every start of the program; that copy
+  failed and sent a failure notification of its own, although the real backup had succeeded and
+  neither `wslbak status` nor the log knew of any failure. And twice, while Avast was doing this, WSL
+  stopped starting Windows programs altogether until `wsl --shutdown`. Whether Avast treats the
+  released executables the same way is not known. If scheduled backups never run, or you get
+  failure notifications that `wslbak status` knows nothing about, add
+  `%LOCALAPPDATA%\Programs\wslbak` to the antivirus exceptions. Do not turn the antivirus off.
 - **`status` says the installed program is missing.** Antivirus software may have quarantined it.
   Restore it from the antivirus history, then run `wslbak init` again to put the files back.
 - **"Cannot write to …" during init.** With Controlled folder access on, allow the program in Windows

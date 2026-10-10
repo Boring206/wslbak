@@ -8,6 +8,11 @@
 # One job runs with Microsoft Defender's real-time protection on. The runner images switch
 # it off, exclude both drives from scanning and put Defender in passive mode; the job undoes
 # that and proves with the standard anti-virus test file that Defender reacts.
+#
+# That job's machine freezes as a whole now and then (5 of 65 runs): it stops answering, the
+# step cannot be ended by its time limit, and the job ends with "lost communication" or has to
+# be cancelled. It is not wslbak's doing: machines of the same kind froze while only setting
+# WSL up, with no wslbak on them. Start the job again when it happens.
 name: e2e
 
 on:

@@ -705,8 +705,9 @@ else
 	rm -f "$HOME_DIR/state.json"
 	LAST_BEFORE="$(newest_backup)"
 	RUNS_BEFORE="$(grep -c 'scheduled=true' "$HOME_DIR/wslbak.log" 2>/dev/null)"
-	# The runner with Microsoft Defender switched on has twice stopped answering in this
-	# section, and a runner that does so loses its log. The marks say how far it got.
+	# The runner with Microsoft Defender switched on froze once during this section (those
+	# machines freeze as a whole now and then, also without wslbak; see the README), and a
+	# runner that does so loses its log. The marks say how far it got.
 	crumb "13e: asking Windows for the time and the power source"
 	# A whole minute between 75 and 135 seconds from now, by the Windows clock.
 	AT="$(win "$PS" -NoProfile -Command "(Get-Date).AddSeconds(135).ToString('HH:mm')" </dev/null 2>/dev/null | tr -d '\r')"
