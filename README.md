@@ -356,7 +356,7 @@ the last 20 hours.
   (GNU tar 1.26 to 1.35); with WSL 2.7 and 3.0; on Windows 11 (build 26300), Windows Server 2025
   (build 26100) and Windows Server 2022 (build 20348, the generation of Windows 10); and with
   Avast and with Microsoft Defender's real-time protection switched on. With Defender on, the suite
-  has passed once; two other runs on that test machine stopped responding (the second while it
+  has passed twice; two other runs on that test machine stopped responding (the second while it
   waited for the task to start by itself), and the cause is not known yet. The arm64 executables
   start and pass the unit tests on arm64 Windows, where no WSL was available to back up. Not tried
   yet: Windows 10 itself, a PC with Docker Desktop, and distros of 100 GB or more; reports are
