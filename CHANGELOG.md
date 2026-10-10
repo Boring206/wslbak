@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.2
 
 Two safeguards against a run that never ends. Before, such a run meant that backups stopped without
 any notification: the stuck run could not report anything, and every later scheduled run found it
@@ -12,6 +12,9 @@ still holding the lock and ended quietly.
 - When a WSL command can neither finish nor be ended (which can happen when WSL as a whole stops
   answering), wslbak stops waiting about half a minute after the command's time limit and reports
   the failure, instead of waiting for ever.
+- The README says what was seen with Avast's sandbox (a second, isolated copy of the program that
+  sends a failure notification of its own; WSL no longer starting Windows programs), and what was
+  found about GitHub's test machines that stopped answering with Microsoft Defender switched on.
 
 ## 0.1.1
 

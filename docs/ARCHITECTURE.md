@@ -69,7 +69,7 @@ fence.go unregisters the temporary distro and deletes its folder
 | `run.go` | `run`, `list`, `status`, `verify`; when to notify |
 | `notify.go` | The Windows notification and the webhook |
 | `doctor.go`, `probe.sh`, `caches.sh` | `doctor`; what a distro looks like; how big its caches are |
-| `disk.go`, `paths.go`, `lock.go`, `log.go`, `ui.go` | Volumes, folders, the single-instance lock, the log, the terminal |
+| `disk.go`, `paths.go`, `lock.go`, `log.go`, `ui.go` | Volumes, folders, the single-instance lock (which records when its holder started, so that a run still there 20 hours later is reported), the log, the terminal |
 | `testhooks.go` | Switches for the tests; they only work together with `--home` |
 | `bin/wslbak.js` | The npm launcher |
 | `scripts/` | Building, packaging, the end-to-end suites, the demo |
@@ -94,6 +94,8 @@ name; the tests use this as their sandbox.
   script shape.
 - `scripts/e2e.sh` runs the real program against a throwaway distro. It is the only way to test
   backup, import, the scheduled task and the console. `.github/workflows/e2e.yml` runs it on
-  Windows Server 2022 and 2025, once with Microsoft Defender's real-time protection on.
+  Windows Server 2022 and 2025, once with Microsoft Defender's real-time protection on. That
+  last machine freezes as a whole now and then (5 of 65 runs); this was looked into and is not
+  wslbak's doing, see "Where it has been tested" in the README.
 - `scripts/e2e-scale.sh` (two million files, a 9 GiB file) and `scripts/e2e-services.sh` (Docker
   and databases at work) are run by hand.
