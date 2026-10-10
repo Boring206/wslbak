@@ -1,6 +1,6 @@
 {
   "name": "wslbak",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Scheduled, verified backups of a WSL distro without stopping it, and one-line restore. WSL 自動備份：不停機、備份完自動試還原、一行還原。",
   "keywords": [
     "wsl",

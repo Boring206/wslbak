@@ -6,7 +6,7 @@
 # the test that a pull request to microsoft/winget-pkgs asks for; "source" installs from the
 # public winget source, which works once that pull request is merged.
 name: installs
-run-name: installs ${{ inputs.version || 'the newest release' }}, winget from ${{ inputs.winget }}
+run-name: "installs ${{ inputs.version || 'the newest release' }}: ${{ inputs.ways }}, winget from ${{ inputs.winget }}"
 
 on:
   workflow_dispatch:
@@ -14,6 +14,10 @@ on:
       version:
         description: "Released version, without the v (empty: the newest release)"
         type: string
+      ways:
+        description: "Which ways to check; leave one out while it does not have the version yet"
+        type: string
+        default: npm zip scoop winget
       winget:
         description: "winget: from the manifest files in the release, or from the public source"
         type: choice
@@ -30,6 +34,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       ASKED_VERSION: ${{ inputs.version }}
+      WAYS: ${{ inputs.ways }}
       WINGET_FROM: ${{ inputs.winget }}
     defaults:
       run:
@@ -42,10 +47,11 @@ jobs:
           if (-not $version) { $version = (gh release view -R $env:GITHUB_REPOSITORY --json tagName -q .tagName).TrimStart('v') }
           if ($version -notmatch '^\d+\.\d+\.\d+$') { Write-Error "not a version: $version"; exit 1 }
           "version=$version" >> $env:GITHUB_OUTPUT
-          "Installing wslbak $version"
+          "Installing wslbak $version: $env:WAYS"
+          if ($env:WAYS -notmatch '^(npm|zip|scoop|winget)( (npm|zip|scoop|winget))*$') { Write-Error "ways must be some of: npm zip scoop winget"; exit 1 }
 
       - name: "npm: from the registry"
-        if: ${{ !cancelled() && steps.version.outputs.version }}
+        if: ${{ !cancelled() && steps.version.outcome == 'success' && contains(inputs.ways, 'npm') }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -57,11 +63,11 @@ jobs:
           npm view "wslbak@$env:VERSION" dist.attestations.provenance.predicateType
 
       - name: "Without Node: the zip from the Releases page"
-        if: ${{ !cancelled() && steps.version.outputs.version }}
+        if: ${{ !cancelled() && steps.version.outcome == 'success' && contains(inputs.ways, 'zip') }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh release download "v$env:VERSION" -R $env:GITHUB_REPOSITORY -D release -p "wslbak-$env:VERSION-windows-x64.zip" -p SHA256SUMS -p package-manifests.zip
+          gh release download "v$env:VERSION" -R $env:GITHUB_REPOSITORY -D release -p "wslbak-$env:VERSION-windows-x64.zip" -p SHA256SUMS
           if ($LASTEXITCODE -ne 0) { exit 1 }
           $zip = "release\wslbak-$env:VERSION-windows-x64.zip"
           $want = ((Get-Content release\SHA256SUMS | Where-Object { $_ -match 'windows-x64\.zip$' }) -split '\s+')[0]
@@ -76,7 +82,7 @@ jobs:
           if ($got -ne "wslbak $env:VERSION") { exit 1 }
 
       - name: "scoop: from the bucket"
-        if: ${{ !cancelled() && steps.version.outputs.version }}
+        if: ${{ !cancelled() && steps.version.outcome == 'success' && contains(inputs.ways, 'scoop') }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -90,7 +96,7 @@ jobs:
           scoop uninstall wslbak
 
       - name: "winget"
-        if: ${{ !cancelled() && steps.version.outputs.version }}
+        if: ${{ !cancelled() && steps.version.outcome == 'success' && contains(inputs.ways, 'winget') }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -98,7 +104,9 @@ jobs:
           if ($env:WINGET_FROM -eq 'source') {
             winget install --id Boring206.wslbak --version $env:VERSION --exact --source winget --accept-package-agreements --accept-source-agreements --disable-interactivity
           } else {
-            Expand-Archive release\package-manifests.zip -DestinationPath manifests
+            gh release download "v$env:VERSION" -R $env:GITHUB_REPOSITORY -D winget-files -p package-manifests.zip
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            Expand-Archive winget-files\package-manifests.zip -DestinationPath manifests
             Get-Content manifests\winget\Boring206.wslbak.installer.yaml
             winget validate --manifest manifests\winget --disable-interactivity
             if ($LASTEXITCODE -ne 0) { Write-Error 'the manifest is not valid'; exit 1 }
@@ -117,4 +125,4 @@ jobs:
           $real = (Get-Item $exe).LinkType ? (Get-Item $exe).Target : $exe
           Get-ChildItem (Split-Path $real) | Format-Table Name, Length
           if (-not (Test-Path (Join-Path (Split-Path $real) 'wslbakw.exe'))) { Write-Error 'wslbakw.exe is not next to wslbak.exe'; exit 1 }
-          winget uninstall --id Boring206.wslbak --exact --disable-interactivity
+          winget uninstall --id Boring206.wslbak --exact --accept-source-agreements --disable-interactivity

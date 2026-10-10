@@ -5,7 +5,7 @@
 Scheduled backups of a WSL distro that do not stop it, a test restore after every backup, a
 notification when something fails, and a one-line restore.
 
-> **Status: 0.1.0, the first public release.** An automated suite has made real backups, test
+> **Status: 0.1.x, the first public releases.** An automated suite has made real backups, test
 > restores and restores on 18 distros and three builds of Windows, but nobody has used wslbak day
 > to day yet. Keep the backups you already have until it has proven itself on your PC.
 
@@ -58,13 +58,20 @@ With Node.js 18 or newer, from a Windows terminal or from inside WSL:
 npm install -g wslbak
 ```
 
-Without Node: download `wslbak-<version>-windows-x64.zip` (or `-arm64`) from the
+With [Scoop](https://scoop.sh):
+
+```
+scoop bucket add boring206 https://github.com/Boring206/scoop-bucket
+scoop install wslbak
+```
+
+Without either: download `wslbak-<version>-windows-x64.zip` (or `-arm64`) from the
 [Releases](https://github.com/Boring206/wslbak/releases) page, unzip it anywhere, and run `wslbak.exe`
 from there. Keep `wslbak.exe` and `wslbakw.exe` together.
 
-Either way the executables are prebuilt, so Go is not needed. `wslbak init` copies them to a fixed
-place of its own, so the download folder or the npm installation can change later without breaking
-the schedule.
+In every case the executables are prebuilt, so Go is not needed. `wslbak init` copies them to a fixed
+place of its own, so the download folder, the npm installation or the Scoop folder can change later without
+breaking the schedule.
 
 ## Getting started
 

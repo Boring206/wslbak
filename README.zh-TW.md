@@ -4,7 +4,7 @@
 
 替 WSL distro 做排程備份：備份時不用停機、每次備份完自動試還原、失敗會通知，還原只要一行指令。
 
-> **狀態：0.1.0，第一個公開版本。** 自動化測試在 18 種 distro 與三個 Windows 組建上實際做過備份、試還原與還原，
+> **狀態：0.1.x，最初的公開版本。** 自動化測試在 18 種 distro 與三個 Windows 組建上實際做過備份、試還原與還原，
 > 但還沒有人長期每天使用過。在它於你的電腦上證明可靠之前，請保留你原有的備份。
 
 ![一分鐘看完怎麼用：設定、備份、看備份內容、取回一個檔案、還原整個 distro](docs/demo.zh-TW.gif)
@@ -48,12 +48,19 @@ distro 照常執行：
 npm install -g wslbak
 ```
 
-沒有 Node：到 [Releases](https://github.com/Boring206/wslbak/releases) 頁面下載
+用 [Scoop](https://scoop.sh)：
+
+```
+scoop bucket add boring206 https://github.com/Boring206/scoop-bucket
+scoop install wslbak
+```
+
+兩者都沒有：到 [Releases](https://github.com/Boring206/wslbak/releases) 頁面下載
 `wslbak-<版本>-windows-x64.zip`（或 `-arm64`），解壓到任何地方，直接執行裡面的 `wslbak.exe`。
 `wslbak.exe` 和 `wslbakw.exe` 要放在一起。
 
-兩種方式拿到的都是編好的執行檔，不需要安裝 Go。`wslbak init` 會把它們複製到自己固定的位置，
-所以之後下載資料夾或 npm 的安裝位置有變動，也不會讓排程失效。
+不管用哪一種方式，拿到的都是編好的執行檔，不需要安裝 Go。`wslbak init` 會把它們複製到自己固定的位置，
+所以之後下載資料夾、npm 的安裝位置或 Scoop 的資料夾有變動，也不會讓排程失效。
 
 ## 開始使用
 
