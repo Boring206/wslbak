@@ -125,4 +125,9 @@ jobs:
           $real = (Get-Item $exe).LinkType ? (Get-Item $exe).Target : $exe
           Get-ChildItem (Split-Path $real) | Format-Table Name, Length
           if (-not (Test-Path (Join-Path (Split-Path $real) 'wslbakw.exe'))) { Write-Error 'wslbakw.exe is not next to wslbak.exe'; exit 1 }
-          winget uninstall --id Boring206.wslbak --exact --accept-source-agreements --disable-interactivity
+          if ($env:WINGET_FROM -eq 'source') {
+            winget uninstall --id Boring206.wslbak --exact --source winget --accept-source-agreements --disable-interactivity
+          } else {
+            winget uninstall --manifest manifests\winget --accept-source-agreements --disable-interactivity
+          }
+          if ($LASTEXITCODE -ne 0) { Write-Error "winget uninstall failed ($LASTEXITCODE)"; exit 1 }
