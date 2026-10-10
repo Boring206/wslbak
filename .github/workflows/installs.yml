@@ -1,0 +1,120 @@
+# Installs a released version in each of the ways the README offers, from where users get
+# it: npm, the zip on the Releases page, the scoop bucket and winget. Nothing is built here.
+# It is started by hand after a release (see RELEASING.md).
+#
+# winget has two modes. "manifest" installs from the manifest files in the release, which is
+# the test that a pull request to microsoft/winget-pkgs asks for; "source" installs from the
+# public winget source, which works once that pull request is merged.
+name: installs
+run-name: installs ${{ inputs.version || 'the newest release' }}, winget from ${{ inputs.winget }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version, without the v (empty: the newest release)"
+        type: string
+      winget:
+        description: "winget: from the manifest files in the release, or from the public source"
+        type: choice
+        options: [manifest, source]
+        default: manifest
+
+permissions:
+  contents: read
+  attestations: read
+
+jobs:
+  installs:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ASKED_VERSION: ${{ inputs.version }}
+      WINGET_FROM: ${{ inputs.winget }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Which version
+        id: version
+        run: |
+          $version = $env:ASKED_VERSION
+          if (-not $version) { $version = (gh release view -R $env:GITHUB_REPOSITORY --json tagName -q .tagName).TrimStart('v') }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { Write-Error "not a version: $version"; exit 1 }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "Installing wslbak $version"
+
+      - name: "npm: from the registry"
+        if: ${{ !cancelled() && steps.version.outputs.version }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          npm install --global --prefix "$PWD\npm-prefix" --no-audit --no-fund "wslbak@$env:VERSION"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $got = & "$PWD\npm-prefix\wslbak.cmd" --version
+          $got
+          if ($got -ne "wslbak $env:VERSION") { exit 1 }
+          npm view "wslbak@$env:VERSION" dist.attestations.provenance.predicateType
+
+      - name: "Without Node: the zip from the Releases page"
+        if: ${{ !cancelled() && steps.version.outputs.version }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release download "v$env:VERSION" -R $env:GITHUB_REPOSITORY -D release -p "wslbak-$env:VERSION-windows-x64.zip" -p SHA256SUMS -p package-manifests.zip
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $zip = "release\wslbak-$env:VERSION-windows-x64.zip"
+          $want = ((Get-Content release\SHA256SUMS | Where-Object { $_ -match 'windows-x64\.zip$' }) -split '\s+')[0]
+          $have = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          if ($have -ne $want) { Write-Error "checksum mismatch: $have, expected $want"; exit 1 }
+          "checksum ok"
+          gh attestation verify $zip -R $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Expand-Archive $zip -DestinationPath unzipped
+          $got = & unzipped\wslbak.exe --version
+          $got
+          if ($got -ne "wslbak $env:VERSION") { exit 1 }
+
+      - name: "scoop: from the bucket"
+        if: ${{ !cancelled() && steps.version.outputs.version }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          Invoke-Expression "& {$(Invoke-RestMethod get.scoop.sh)} -RunAsAdmin"
+          $env:PATH = "$env:USERPROFILE\scoop\shims;$env:PATH"
+          scoop bucket add boring206 https://github.com/Boring206/scoop-bucket
+          scoop install wslbak
+          $got = wslbak --version
+          $got
+          if ($got -ne "wslbak $env:VERSION") { Write-Error "the bucket does not have $env:VERSION (yet)"; exit 1 }
+          scoop uninstall wslbak
+
+      - name: "winget"
+        if: ${{ !cancelled() && steps.version.outputs.version }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          winget --version
+          if ($env:WINGET_FROM -eq 'source') {
+            winget install --id Boring206.wslbak --version $env:VERSION --exact --source winget --accept-package-agreements --accept-source-agreements --disable-interactivity
+          } else {
+            Expand-Archive release\package-manifests.zip -DestinationPath manifests
+            Get-Content manifests\winget\Boring206.wslbak.installer.yaml
+            winget validate --manifest manifests\winget --disable-interactivity
+            if ($LASTEXITCODE -ne 0) { Write-Error 'the manifest is not valid'; exit 1 }
+            winget settings --enable LocalManifestFiles
+            winget install --manifest manifests\winget --accept-package-agreements --accept-source-agreements --disable-interactivity
+          }
+          if ($LASTEXITCODE -ne 0) { Write-Error "winget install failed ($LASTEXITCODE)"; exit 1 }
+          # winget put the package's folder on PATH in the registry; this shell started before that.
+          $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'User') + ';' + [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+          $exe = (Get-Command wslbak -ErrorAction Stop).Source
+          $exe
+          $got = wslbak --version
+          $got
+          if ($got -ne "wslbak $env:VERSION") { exit 1 }
+          # The scheduled task runs wslbakw.exe, which has to sit next to the program that winget starts.
+          $real = (Get-Item $exe).LinkType ? (Get-Item $exe).Target : $exe
+          Get-ChildItem (Split-Path $real) | Format-Table Name, Length
+          if (-not (Test-Path (Join-Path (Split-Path $real) 'wslbakw.exe'))) { Write-Error 'wslbakw.exe is not next to wslbak.exe'; exit 1 }
+          winget uninstall --id Boring206.wslbak --exact --disable-interactivity

@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 PackageIdentifier: Boring206.wslbak
 PackageVersion: {{VERSION}}
 PackageLocale: en-US
@@ -22,4 +22,4 @@ Tags:
   - cli
 ReleaseNotesUrl: https://github.com/Boring206/wslbak/releases/tag/v{{VERSION}}
 ManifestType: defaultLocale
-ManifestVersion: 1.10.0
+ManifestVersion: 1.12.0
