@@ -122,6 +122,7 @@ type catalog struct {
 	AskProceed          string
 	DryRunNothingDone   string
 	AlreadyRunning      string
+	AlreadyRunningLong  string // 小時數
 	NotSetUp            string
 	NothingConfigured   string
 	DistroNotConfigured string // distro
@@ -230,6 +231,8 @@ type catalog struct {
 
 	// 通知
 	NotifyFailedTitle     string // distro
+	NotifyStuckTitle      string // 小時數
+	NotifyStuckBody       string
 	NotifyUnverifiedTitle string // distro
 	NotifyOKTitle         string // distro
 	NotifyOKBody          string // 編號, 大小
@@ -455,6 +458,7 @@ var zhTW = catalog{
 	AskProceed:            "確定嗎？[y/N] ",
 	DryRunNothingDone:     "（--dry-run：以上都沒有實際執行）",
 	AlreadyRunning:        "已經有另一個 wslbak 在執行（可能是排程的備份）。等它結束後再試。",
+	AlreadyRunningLong:    "它已經執行了 %d 小時，很可能卡住了。重新開機（或登出再登入）會結束它。",
 	NotSetUp:              "還沒有設定備份。執行 wslbak init 開始設定。",
 	NothingConfigured:     "沒有啟用備份的 distro。執行 wslbak init 設定。",
 	DistroNotConfigured:   "還沒有替 %[1]s 設定備份。執行 wslbak init -d %[1]s",
@@ -549,6 +553,8 @@ var zhTW = catalog{
 	ReasonUser:            "還原出來的 distro 裡找不到原本的預設使用者或家目錄",
 	ReasonSamples:         "還原出來的檔案內容和備份時不同",
 	NotifyFailedTitle:     "wslbak：%s 備份失敗",
+	NotifyStuckTitle:      "wslbak：有一次備份已經執行了 %d 小時",
+	NotifyStuckBody:       "它很可能卡住了；在它結束之前，新的備份無法開始。請重新開機（或登出再登入），然後執行 wslbak run。",
 	NotifyUnverifiedTitle: "wslbak：%s 的備份沒有驗證",
 	NotifyOKTitle:         "wslbak：%s 備份完成",
 	NotifyOKBody:          "%[1]s（%[2]s）已通過試還原。",
@@ -789,6 +795,7 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	AskProceed:            "Proceed? [y/N] ",
 	DryRunNothingDone:     "(--dry-run: nothing above was actually done)",
 	AlreadyRunning:        "Another wslbak is already running (possibly the scheduled backup). Try again when it has finished.",
+	AlreadyRunningLong:    "It has been running for %d hours, so it is probably stuck. Restarting Windows (or signing out and in again) ends it.",
 	NotSetUp:              "Backups are not set up yet. Run wslbak init to get started.",
 	NothingConfigured:     "No distro is set up for backup. Run wslbak init.",
 	DistroNotConfigured:   "%[1]s is not set up for backup. Run wslbak init -d %[1]s",
@@ -883,6 +890,8 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	ReasonUser:            "the original default user or their home directory is missing from the restored distro",
 	ReasonSamples:         "the contents of restored files differ from what was backed up",
 	NotifyFailedTitle:     "wslbak: backup of %s failed",
+	NotifyStuckTitle:      "wslbak: a backup has been running for %d hours",
+	NotifyStuckBody:       "It is probably stuck, and no new backup can start until it ends. Restart Windows (or sign out and in again), then run wslbak run.",
 	NotifyUnverifiedTitle: "wslbak: backup of %s was not verified",
 	NotifyOKTitle:         "wslbak: backup of %s finished",
 	NotifyOKBody:          "%[1]s (%[2]s) passed its test restore.",

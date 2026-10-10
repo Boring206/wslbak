@@ -172,7 +172,7 @@ func warmUp(dir string) (took time.Duration, problem string) {
 		cmd := exec.CommandContext(ctx, exe, "--version")
 		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
 		cmd.WaitDelay = waitDelay
-		err := cmd.Run()
+		err := runBounded(ctx, cmd)
 		cancel()
 		if err != nil {
 			logf("warm-up of %s failed after %v: %v", exe, time.Since(began).Round(time.Millisecond), err)

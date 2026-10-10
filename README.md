@@ -293,6 +293,14 @@ missing, or when the installed program has disappeared.
   `restore --path` or `uninstall` exits with code 3 (a scheduled run that finds another one at work
   simply ends). Commands that only read, and restoring a whole distro as a new one, are not held
   back.
+- A run that never ends does not go unnoticed. When a scheduled run finds that another wslbak has
+  been running for 20 hours or more, it does not simply end: it fails with exit code 2 and notifies
+  you that a backup is probably stuck, because the stuck one cannot do that itself.
+- A WSL that has stopped answering does not leave wslbak waiting for ever. Every WSL command has a
+  time limit (for the backup itself: ten minutes without any data arriving); when it runs out,
+  wslbak ends the command and reports the failure. If the command cannot even be ended, wslbak stops
+  waiting about half a minute later and still reports the failure. That last case cannot be produced
+  on demand, so only its logic is tested.
 
 ## How it works
 
