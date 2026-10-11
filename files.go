@@ -19,7 +19,16 @@ import (
 func (m *manifest) indexPath() string { return filepath.Join(m.dir, m.ID+indexSuffix) }
 
 // ensureIndex 確認這份備份有檔案索引；沒有的話把封存掃一遍建立起來（只需要做一次）。
+// 差異備份還需要它的完整備份的索引：一個還原點的內容是兩者合起來的。
 func ensureIndex(m *manifest) error {
+	if m.isDiff() {
+		if m.orphan() {
+			return fmt.Errorf(T.RestoreOrphan, m.ID, m.Base)
+		}
+		if err := ensureIndex(m.base); err != nil {
+			return err
+		}
+	}
 	if fileExists(m.indexPath()) {
 		return nil
 	}
@@ -56,7 +65,7 @@ func pickBackup(opts options) (*manifest, int) {
 		return nil, code
 	}
 	if opts.id != "" {
-		if m := readManifest(source.Dir, opts.id); m != nil {
+		if m := findBackup(source.Dir, opts.id); m != nil {
 			return m, 0
 		}
 		return nil, fail(fmt.Errorf(T.NoSuchBackup, opts.id))
@@ -65,6 +74,39 @@ func pickBackup(opts options) (*manifest, int) {
 		return m, 0
 	}
 	return nil, fail(fmt.Errorf(T.NoBackups, source.Dir))
+}
+
+// scanEntries 逐筆走過一個還原點裡的所有項目；visit 回傳 false 就提早結束。
+// 完整備份就是它自己的索引。差異的還原點是合併後的樣子：完整備份裡還留著的項目，再加上差異自己的。
+func scanEntries(m *manifest, visit func(indexEntry) bool) error {
+	if !m.isDiff() {
+		return scanIndex(m.indexPath(), visit)
+	}
+	if m.orphan() {
+		return fmt.Errorf(T.RestoreOrphan, m.ID, m.Base)
+	}
+	drop, err := unpackBits(m.Drop)
+	if err != nil {
+		return fmt.Errorf("%w: %v", errMergeMismatch, err)
+	}
+	var ordinal int64
+	stopped := false
+	err = scanIndex(m.base.indexPath(), func(e indexEntry) bool {
+		n := ordinal
+		ordinal++
+		if bitSet(drop, n) {
+			return true
+		}
+		stopped = !visit(e)
+		return !stopped
+	})
+	if err != nil || stopped {
+		return err
+	}
+	if ordinal != m.BaseEntries {
+		return errMergeMismatch
+	}
+	return scanIndex(m.indexPath(), visit)
 }
 
 // parentOf 回傳封存裡某個名稱的上一層：./etc/passwd → ./etc，./etc → 「.」。
@@ -104,7 +146,7 @@ func cmdFiles(opts options) int {
 	if opts.find != "" {
 		needle := strings.ToLower(opts.find)
 		var rows [][]string
-		err := scanIndex(m.indexPath(), func(e indexEntry) bool {
+		err := scanEntries(m, func(e indexEntry) bool {
 			if strings.Contains(strings.ToLower(e.name()), needle) {
 				rows = append(rows, fileRow(e, displayPath(e.name())))
 			}
@@ -134,7 +176,7 @@ func cmdFiles(opts options) int {
 	// 要列的是 target 自己（如果它是檔案）或它底下的那一層（如果它是目錄）。
 	var self *indexEntry
 	var children []indexEntry
-	err = scanIndex(m.indexPath(), func(e indexEntry) bool {
+	err = scanEntries(m, func(e indexEntry) bool {
 		name := e.name()
 		switch {
 		case name == target:

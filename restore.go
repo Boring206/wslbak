@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -119,12 +120,15 @@ func cmdRestore(opts options) int {
 	}
 	var m *manifest
 	if opts.id != "" {
-		if m = readManifest(source.Dir, opts.id); m == nil {
+		if m = findBackup(source.Dir, opts.id); m == nil {
 			return fail(fmt.Errorf(T.NoSuchBackup, opts.id))
 		}
 	} else if m = newest(backups, true); m == nil {
 		// 沒有任何一份通過試還原：仍然可以還原最新的，但要講清楚。
-		m = newest(backups, false)
+		m = newestRestorable(backups)
+	}
+	if m.orphan() {
+		return fail(fmt.Errorf(T.RestoreOrphan, m.ID, m.Base))
 	}
 
 	distros, err := readLxss()
@@ -164,6 +168,9 @@ func cmdRestore(opts options) int {
 	}
 
 	fmt.Printf(T.RestorePlan+"\n", bold(m.ID), m.Distro, humanBytes(m.Size), verifyLabel(m), bold(name), target)
+	if m.isDiff() {
+		fmt.Printf(T.RestoreDiffNote+"\n", m.ID, m.base.ID, humanBytes(m.base.Size))
+	}
 	if !m.verified() {
 		fmt.Println(yellow(T.RestoreUnverified))
 	}
@@ -178,12 +185,23 @@ func cmdRestore(opts options) int {
 	}
 
 	fmt.Println(T.RestoreChecking)
-	sum, err := fileSHA256(m.archivePath())
-	if err != nil {
-		return fail(err)
-	}
-	if sum != m.SHA256 {
-		return fail(fmt.Errorf(T.RestoreCorrupt, m.Archive))
+	if m.isDiff() {
+		// 兩個封存都從頭讀一遍：解得開、走得完、雜湊與項目數都對。合併時出錯的話，
+		// WSL 可能已經建立了一個不完整的 distro，所以能先查的都先查。
+		for _, part := range []*manifest{m.base, m} {
+			if reason, detail := checkArchive(part); reason != "" {
+				logf("restore: %s: %s: %s", part.Archive, reason, detail)
+				return fail(fmt.Errorf(T.RestoreCorrupt, part.Archive))
+			}
+		}
+	} else {
+		sum, err := fileSHA256(m.archivePath())
+		if err != nil {
+			return fail(err)
+		}
+		if sum != m.SHA256 {
+			return fail(fmt.Errorf(T.RestoreCorrupt, m.Archive))
+		}
 	}
 	fmt.Println(T.RestoreImporting)
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -192,9 +210,19 @@ func cmdRestore(opts options) int {
 	began := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), importTimeout)
 	defer cancel()
-	if err := importDistro(ctx, name, target, m.archivePath(), nil); err != nil {
-		// 匯入沒成功時，WSL 可能已經在開始功能表替它建了一個空資料夾。
-		removeStartMenuFolder(name)
+	if m.isDiff() {
+		err = importMerged(ctx, name, target, m)
+	} else {
+		err = importDistro(ctx, name, target, m.archivePath(), nil)
+	}
+	if err != nil {
+		if now, lerr := readLxss(); lerr == nil && findDistro(now, name) != nil {
+			// 還原只會建立 distro，不會移除任何一個，連自己剛建到一半的也一樣：交給使用者確認後處理。
+			fmt.Fprintln(os.Stderr, yellow(fmt.Sprintf(T.RestoreIncomplete, name)))
+		} else {
+			// 匯入沒成功時，WSL 可能已經在開始功能表替它建了一個空資料夾。
+			removeStartMenuFolder(name)
+		}
 		return fail(err)
 	}
 	// 匯入的 distro 預設用 root 登入；設回備份當時的預設使用者。
@@ -210,6 +238,39 @@ func cmdRestore(opts options) int {
 		fmt.Println(yellow(fmt.Sprintf(T.RestoreTwins, m.Distro)))
 	}
 	return 0
+}
+
+// newestRestorable 回傳最新的一份還原得出來的備份（不管有沒有通過驗證）；
+// 完整備份不見了的差異不算。一份都沒有時回傳最新的那一份，由呼叫端說明為什麼不行。
+func newestRestorable(list []*manifest) *manifest {
+	for i := len(list) - 1; i >= 0; i-- {
+		if !list[i].orphan() {
+			return list[i]
+		}
+	}
+	return newest(list, false)
+}
+
+// importMerged 把差異的還原點（完整備份＋差異）合併成一條 tar，匯入成新的 distro。
+func importMerged(ctx context.Context, name, dir string, m *manifest) error {
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		err := writeMerged(m, pw, mergeOptions{})
+		if err == nil {
+			// 結尾標記。合併沒有成功就不寫：匯入端不會把少了結尾的串流當成完整的。
+			_, err = pw.Write(make([]byte, 2*tarBlock))
+		}
+		pw.CloseWithError(err)
+		done <- err
+	}()
+	importErr := importFromReader(ctx, name, dir, pr)
+	// 匯入先結束的話，讓還在寫的那一端跟著停下來。
+	pr.CloseWithError(io.ErrClosedPipe)
+	if mergeErr := <-done; mergeErr != nil && !errors.Is(mergeErr, io.ErrClosedPipe) {
+		return mergeErr
+	}
+	return importErr
 }
 
 // pickSource 依 -d 或「只有一個」選出要用哪個 distro 的備份；選不出來時印出原因並回傳結束碼。

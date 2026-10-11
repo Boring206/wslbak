@@ -44,6 +44,9 @@ func TestParseArgs(t *testing.T) {
 			options{command: "config", distro: "Ubuntu", exclude: []string{"./home/*/Downloads/*", "./var/lib/docker/*"}, unexclude: []string{"./tmp/*"}}},
 		{[]string{"config", "--notify", "always", "--verify", "none", "--webhook", "off", "--keep-weekly", "0", "--disable"},
 			options{command: "config", notify: "always", verify: "none", webhook: "off", disable: true}},
+		{[]string{"config", "-d", "Ubuntu", "--mode", "diff", "--full-every=14"}, options{command: "config", distro: "Ubuntu", mode: "diff", fullEvery: 14}},
+		{[]string{"config", "--mode=full"}, options{command: "config", mode: "full"}},
+		{[]string{"run", "--full", "--no-verify"}, options{command: "run", full: true, noVerify: true}},
 	}
 	for _, c := range cases {
 		got, err := parseArgs(c.args)
@@ -77,6 +80,13 @@ func TestParseArgsErrors(t *testing.T) {
 		{[]string{"init", "--dest="}, "--dest 後面要接一個值"},
 		{[]string{"run", "-d"}, "-d 後面要接一個值"},
 		{[]string{"init", "--keep", "0"}, "保留份數"},
+		{[]string{"config", "--mode", "weekly"}, "--mode 只能是 full 或 diff：weekly"},
+		{[]string{"config", "--full-every", "0"}, "--full-every 要是 1 到 365 的整數"},
+		{[]string{"config", "--full-every", "366"}, "--full-every 要是 1 到 365 的整數"},
+		{[]string{"config", "--full-every", "soon"}, "--full-every 要是 1 到 365 的整數"},
+		{[]string{"run", "--mode", "diff"}, "--mode 不能用在 run 指令"},
+		{[]string{"config", "--full"}, "--full 不能用在 config 指令"},
+		{[]string{"init", "--mode", "diff"}, "--mode 不能用在 init 指令"},
 		{[]string{"init", "--keep", "many"}, "保留份數"},
 		{[]string{"init", "--at", "24:00"}, "HH:MM"},
 		{[]string{"init", "--at", "3pm"}, "HH:MM"},

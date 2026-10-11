@@ -224,3 +224,75 @@ func walkTar(r io.Reader, out io.Writer, want func(rawEntry) bool) (entries int6
 		pax, longName, longLink = nil, "", ""
 	}
 }
+
+// tarDirectory 是目錄項目的類型代碼。
+const tarDirectory = '5'
+
+// mergeInput 是把一個差異的還原點合成一條 tar 串流需要的東西。
+type mergeInput struct {
+	// Base 是完整備份的 tar（已解壓）。
+	Base io.Reader
+	// Diff 開啟差異的 tar（已解壓）。它會被呼叫兩次：差異要走兩遍。
+	Diff func() (io.Reader, error)
+	// Drop 是完整備份裡不要的項目，每個項目一個位元；BaseEntries 是完整備份的項目數。
+	Drop        []byte
+	BaseEntries int64
+	// Want 挑出要的項目；nil 表示全部都要。
+	Want func(rawEntry) bool
+	// OnBase 在走到完整備份的每個項目時呼叫（可以是 nil），回傳錯誤就讓整個合併失敗。
+	// 試還原用它確認索引和封存講的是同一批項目、同一個順序。
+	OnBase func(ordinal int64, e rawEntry) error
+}
+
+var errMergeMismatch = errors.New("the full backup is not the one this differential was made from")
+
+// mergeTar 把完整備份與差異合成一個還原點，寫到 out。結尾標記不寫，由呼叫端決定後面接什麼。
+//
+// 順序是：差異裡的目錄、完整備份裡留下來的項目、差異裡其餘的項目。差異帶著現在的每一個目錄，
+// 完整備份裡的目錄項目則全部在「不要」的那一邊，所以每個路徑在串流裡只出現一次，
+// 而且目錄一定排在它底下的東西前面。每個項目都是原樣搬過去的，一個位元組也不改。
+func mergeTar(in mergeInput, out io.Writer) error {
+	want := in.Want
+	if want == nil {
+		want = func(rawEntry) bool { return true }
+	}
+	first, err := in.Diff()
+	if err != nil {
+		return err
+	}
+	if _, err := walkTar(first, out, func(e rawEntry) bool { return e.Typeflag == tarDirectory && want(e) }); err != nil {
+		return err
+	}
+
+	var ordinal int64
+	var baseErr error
+	seen, err := walkTar(in.Base, out, func(e rawEntry) bool {
+		n := ordinal
+		ordinal++
+		if baseErr != nil {
+			return false
+		}
+		if in.OnBase != nil {
+			if baseErr = in.OnBase(n, e); baseErr != nil {
+				return false
+			}
+		}
+		return !bitSet(in.Drop, n) && want(e)
+	})
+	if err != nil {
+		return err
+	}
+	if baseErr != nil {
+		return baseErr
+	}
+	if seen != in.BaseEntries {
+		return fmt.Errorf("%w: it has %d entries, %d were expected", errMergeMismatch, seen, in.BaseEntries)
+	}
+
+	second, err := in.Diff()
+	if err != nil {
+		return err
+	}
+	_, err = walkTar(second, out, func(e rawEntry) bool { return e.Typeflag != tarDirectory && want(e) })
+	return err
+}

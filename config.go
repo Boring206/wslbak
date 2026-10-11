@@ -14,7 +14,13 @@ import (
 
 // configSchema 是這個版本看得懂的設定格式。讀到更新的格式時拒絕寫入，
 // 免得舊版程式把新版加的欄位弄丟。
-const configSchema = 1
+//
+// 2 多了差異備份的設定（mode、fullEvery）。只有真的開了差異模式才會寫成 2：
+// 沒用到新設定的人，設定檔仍然是舊版讀得懂的 plainConfigSchema。
+const (
+	configSchema      = 2
+	plainConfigSchema = 1
+)
 
 const (
 	verifyRestore = "restore" // 每次備份後匯入成暫時 distro 檢查
@@ -45,6 +51,17 @@ type distroConfig struct {
 	Exclude         []string `json:"exclude"`
 	DefaultExcludes bool     `json:"defaultExcludes"`
 	Enabled         bool     `json:"enabled"`
+	// Mode 是空的表示每次都做完整備份；diff 表示差異備份（見 diff.go）。
+	// FullEvery 是差異模式下，一份完整備份最多用幾天；0 表示預設值。
+	Mode      string `json:"mode,omitempty"`
+	FullEvery int    `json:"fullEvery,omitempty"`
+}
+
+func (d *distroConfig) fullEvery() int {
+	if d.FullEvery < 1 {
+		return defaultFullEvery
+	}
+	return d.FullEvery
 }
 
 type config struct {
@@ -126,6 +143,12 @@ func loadConfig() (*config, error) {
 		if d.Keep < 1 {
 			d.Keep = defaultKeep
 		}
+		if d.Mode != modeDiff {
+			d.Mode = ""
+		}
+		if d.FullEvery < 1 || d.FullEvery > maxFullEvery {
+			d.FullEvery = 0
+		}
 	}
 	return c, nil
 }
@@ -139,7 +162,12 @@ func saveConfig(c *config) error {
 	if _, err := loadConfig(); errors.Is(err, errNewerConfig) {
 		return err
 	}
-	c.Schema = configSchema
+	c.Schema = plainConfigSchema
+	for _, d := range c.Distros {
+		if d.Mode == modeDiff {
+			c.Schema = configSchema
+		}
+	}
 	return writeJSON(path, c)
 }
 

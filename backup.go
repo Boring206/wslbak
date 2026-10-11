@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -203,7 +204,7 @@ func compressWorkers(scheduled bool) int {
 	return n
 }
 
-var partialRe = regexp.MustCompile(`^\d{8}T\d{6}Z\.tar\.gz\.partial$`)
+var partialRe = regexp.MustCompile(`^\d{8}T\d{6}Z\.(tar\.gz|diff\.tar\.gz|idx\.gz|dirs\.gz)\.(partial|new)$`)
 
 // cleanPartials 清掉上次沒寫完的檔案。只認我們自己的檔名格式，而且呼叫時握有全域鎖，
 // 所以不會刪到正在寫的檔案。
@@ -225,36 +226,130 @@ type backupRequest struct {
 	WSL        string
 	Scheduled  bool
 	OnProgress func(tarBytes int64) // 可以是 nil
+	// OnStage 在開始「列出檔案」這種沒有進度可報的步驟時呼叫（可以是 nil）。
+	OnStage func(stage string)
+
+	// 以下只和差異備份有關。Mode 不是 diff 時，這次備份和 0.1.x 做的完全一樣。
+	Mode      string
+	FullEvery int
+	ForceFull bool
+	Verify    string // 設定裡的 verify
 }
 
-// runBackup 做一次備份，成功時回傳已經寫好的 manifest。
-func runBackup(req backupRequest) (*manifest, error) {
-	began := time.Now()
-	if err := os.MkdirAll(req.Dir, 0o755); err != nil {
-		return nil, &backupError{failWrite, err.Error()}
-	}
-	cleanPartials(req.Dir)
+const (
+	stageListing = "listing"
+	stageReading = "reading"
+)
 
-	// 編號精確到秒；同一秒內的第二次備份等到下一秒。
-	id := began.UTC().Format(idLayout)
-	for readManifest(req.Dir, id) != nil {
+func (req *backupRequest) stage(name string) {
+	if req.OnStage != nil {
+		req.OnStage(name)
+	}
+}
+
+func (req *backupRequest) scriptVars(more ...scriptVar) []scriptVar {
+	return append([]scriptVar{
+		{"WSLBAK_ROOT", "/"},
+		{"WSLBAK_EXCLUDES", strings.Join(req.Excludes, "\n")},
+	}, more...)
+}
+
+// kindQuery 把這次備份的設定整理成 chooseKind 要的樣子。
+func (req *backupRequest) kindQuery(backups []*manifest) kindQuery {
+	return kindQuery{
+		Mode: req.Mode, ForceFull: req.ForceFull, FullEvery: req.FullEvery, Verify: req.Verify,
+		Excludes: req.Excludes, Backups: backups, Now: time.Now(),
+		ArchiveSize: func(b *manifest) int64 {
+			info, err := os.Stat(b.archivePath())
+			if err != nil {
+				return -1
+			}
+			return info.Size()
+		},
+	}
+}
+
+// newBackupID 取一個還沒用過的編號。編號精確到秒；同一秒內的第二次備份等到下一秒。
+func newBackupID(dir string) string {
+	id := time.Now().UTC().Format(idLayout)
+	for fileExists(filepath.Join(dir, id+".json")) {
 		time.Sleep(time.Second)
 		id = time.Now().UTC().Format(idLayout)
 	}
-	m := &manifest{
-		Schema: manifestSchema, ID: id, Distro: req.Distro.Name, DistroID: req.Distro.GUID,
-		Created: began.UTC(), Tool: version, WSL: req.WSL, Archive: id + archiveSuffix,
-		DefaultUID: req.Distro.DefaultUID, Flags: req.Distro.Flags, Excludes: req.Excludes, dir: req.Dir,
-	}
+	return id
+}
 
+// tarPass 是「在 distro 裡跑一趟 tar，把它寫成一個封存檔」需要的東西。
+type tarPass struct {
+	Distro     string
+	Dir        string
+	ID         string
+	Suffix     string // 封存檔的副檔名
+	Vars       []scriptVar
+	Scheduled  bool
+	OnProgress func(tarBytes int64)
+	// OnEntry 在 tar 寫出每個項目時呼叫一次（可以是 nil）。
+	OnEntry func(indexEntry)
+}
+
+// passResult 是一趟 tar 的結果。封存還叫 .partial；呼叫端決定要留（keep）還是丟（discard）。
+type passResult struct {
+	Index        tarIndex
+	ScanErr      error // 掃描器看不懂這條 tar；封存本身是完整的
+	Size         int64
+	SHA256       string
+	Proto        [][]string
+	Warnings     []string
+	WarningCount int
+
+	partial string
+	index   *indexWriter
+}
+
+// keep 把封存改成正式的檔名，並把檔案索引寫完。
+func (r *passResult) keep(archive string) error {
+	if err := os.Rename(r.partial, archive); err != nil {
+		r.discard()
+		return err
+	}
+	r.partial = ""
+	if r.index != nil {
+		if err := r.index.close(true); err != nil {
+			logf("file index for %s: %v", filepath.Base(archive), err)
+		}
+		r.index = nil
+	}
+	return nil
+}
+
+// discard 丟掉這一趟寫出來的東西。
+func (r *passResult) discard() {
+	if r.partial != "" {
+		os.Remove(r.partial)
+		r.partial = ""
+	}
+	if r.index != nil {
+		r.index.close(false)
+		r.index = nil
+	}
+}
+
+func (r *passResult) rows(key string) []string {
+	var out []string
+	for _, row := range r.Proto {
+		if row[0] == key {
+			out = append(out, strings.Join(row[1:], " "))
+		}
+	}
+	return out
+}
+
+// runTarPass 在 distro 裡跑一趟 tar，壓縮、算雜湊，寫成 <編號><副檔名>.partial，並確認 tar 真的把它寫完了。
+func runTarPass(p tarPass) (*passResult, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	script := withVars(backupScript,
-		scriptVar{"WSLBAK_ROOT", "/"},
-		scriptVar{"WSLBAK_EXCLUDES", strings.Join(req.Excludes, "\n")},
-	)
 	var stderr stderrLog
-	stream, err := startInDistro(ctx, req.Distro.Name, script, stderr.add)
+	stream, err := startInDistro(ctx, p.Distro, withVars(backupScript, p.Vars...), stderr.add)
 	if err != nil {
 		return nil, &backupError{failStart, err.Error()}
 	}
@@ -275,24 +370,24 @@ func runBackup(req backupRequest) (*manifest, error) {
 		return nil, &backupError{failNotTar, fmt.Sprintf("exit %d: %s", code, detail)}
 	}
 
-	partial := filepath.Join(req.Dir, id+partialSuffix)
-	file, err := os.Create(partial)
+	res := &passResult{partial: filepath.Join(p.Dir, p.ID+p.Suffix+partialSuffix)}
+	file, err := os.Create(res.partial)
 	if err != nil {
 		cancel()
 		stream.Wait()
 		return nil, &backupError{failWrite, err.Error()}
 	}
-	keep := false
+	done := false
 	defer func() {
-		if !keep {
+		if !done {
 			file.Close()
-			os.Remove(partial)
+			res.discard()
 		}
 	}()
 
 	progress := &progressReader{r: withTestReadRate(stream.Stdout)}
 	var stalled atomic.Bool
-	done, watcherGone := make(chan struct{}), make(chan struct{})
+	finished, watcherGone := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(watcherGone)
 		ticker := time.NewTicker(time.Second)
@@ -300,12 +395,12 @@ func runBackup(req backupRequest) (*manifest, error) {
 		watch := newStallWatch(time.Now())
 		for {
 			select {
-			case <-done:
+			case <-finished:
 				return
 			case now := <-ticker.C:
 				moved, stuck := watch.observe(now, progress.n.Load())
-				if moved && req.OnProgress != nil {
-					req.OnProgress(progress.n.Load())
+				if moved && p.OnProgress != nil {
+					p.OnProgress(progress.n.Load())
 				}
 				if stuck {
 					stalled.Store(true)
@@ -321,26 +416,27 @@ func runBackup(req backupRequest) (*manifest, error) {
 	buffered := bufio.NewWriterSize(sink, 1<<20)
 	zw := pgzip.NewWriter(buffered)
 	// 每塊 1 MiB。區塊越大，同時在壓縮的區塊佔的記憶體越多；1 MiB 時大約是「執行緒數 × 幾 MiB」。
-	zw.SetConcurrency(1<<20, compressWorkers(req.Scheduled))
+	zw.SetConcurrency(1<<20, compressWorkers(p.Scheduled))
 	// 檔案索引和封存一起寫；寫不出來不影響備份本身，之後需要時可以再從封存建立。
-	indexPath := filepath.Join(req.Dir, id+indexSuffix)
-	index, indexErr := newIndexWriter(indexPath, id)
-	var onEntry func(indexEntry)
+	index, indexErr := newIndexWriter(filepath.Join(p.Dir, p.ID+indexSuffix), p.ID)
 	if indexErr == nil {
-		onEntry = index.add
-		defer func() {
-			if err := index.close(keep); err != nil {
-				logf("file index for %s: %v", id, err)
-			}
-		}()
+		res.index = index
 	} else {
-		logf("file index for %s: %v", id, indexErr)
+		logf("file index for %s: %v", p.ID, indexErr)
+	}
+	onEntry := func(e indexEntry) {
+		if res.index != nil {
+			res.index.add(e)
+		}
+		if p.OnEntry != nil {
+			p.OnEntry(e)
+		}
 	}
 	// tar 的輸出先經過 sizeFixReader：8 GiB 以上的檔案要把大小補進標頭，WSL 的匯入才讀得對。
 	fixed := newSizeFixReader(progress)
 	idx, scanErr := scanTar(io.TeeReader(fixed, zw), onEntry)
 	if fixed.Fixed > 0 {
-		logf("backup %s: wrote the size of %d file(s) of 8 GiB or more into their tar headers", id, fixed.Fixed)
+		logf("backup %s: wrote the size of %d file(s) of 8 GiB or more into their tar headers", p.ID, fixed.Fixed)
 	}
 	closeErr := zw.Close()
 	if err := buffered.Flush(); closeErr == nil {
@@ -349,7 +445,7 @@ func runBackup(req backupRequest) (*manifest, error) {
 	if err := file.Sync(); closeErr == nil {
 		closeErr = err
 	}
-	close(done)
+	close(finished)
 	<-watcherGone
 	if sink.err != nil || closeErr != nil {
 		// 寫不進去了：不要讓 tar 繼續把整個 distro 讀完。
@@ -375,8 +471,8 @@ func runBackup(req backupRequest) (*manifest, error) {
 	}
 
 	// 腳本要自己報告 tar 的結束碼並走到最後；少了任何一個就代表它中途死掉了。
-	_, finished := protoValue(stderr.proto, "done")
-	if _, reported := protoValue(stderr.proto, "tar-exit"); !reported || !finished {
+	_, reachedEnd := protoValue(stderr.proto, "done")
+	if _, reported := protoValue(stderr.proto, "tar-exit"); !reported || !reachedEnd {
 		return nil, &backupError{failTruncated, fmt.Sprintf("the script did not finish (exit %d)", code)}
 	}
 	// 收到的位元組數要和 tar 自己說它寫出的一樣多。
@@ -391,43 +487,321 @@ func runBackup(req backupRequest) (*manifest, error) {
 		}
 		return nil, &backupError{failTar, detail}
 	}
-
-	if scanErr != nil {
-		// tar 說它成功了，資料也完整收到，只是我們的掃描器讀不懂（例如超大的延伸標頭）。
-		// 備份照樣留下，但沒有索引就不能試還原。
-		logf("tar scan failed, the backup cannot be test-restored: %v", scanErr)
-	} else {
-		m.Index = &idx
-	}
-	for _, row := range stderr.proto {
-		switch row[0] {
-		case "dropped":
-			m.Dropped = append(m.Dropped, strings.Join(row[1:], " "))
-		case "skipped-mount":
-			m.SkippedMounts = append(m.SkippedMounts, strings.Join(row[1:], " "))
-		}
-	}
 	for _, note := range stderr.notes {
 		logf("wsl.exe: %s", note)
 	}
-	m.WarningCount = len(warnings)
-	m.Warnings = warnings[:min(len(warnings), maxWarnings)]
-	m.Size = info.Size()
-	m.SHA256 = hex.EncodeToString(sum.Sum(nil))
-	m.Seconds = time.Since(began).Seconds()
+	res.Index, res.ScanErr = idx, scanErr
+	res.Size, res.SHA256 = info.Size(), hex.EncodeToString(sum.Sum(nil))
+	res.Proto = stderr.proto
+	res.WarningCount = len(warnings)
+	res.Warnings = warnings[:min(len(warnings), maxWarnings)]
+	done = true
+	return res, nil
+}
 
-	if err := os.Rename(partial, m.archivePath()); err != nil {
+// fill 把一趟 tar 的結果填進 manifest。
+func (m *manifest) fill(res *passResult, began time.Time) {
+	if res.ScanErr != nil {
+		// tar 說它成功了，資料也完整收到，只是我們的掃描器讀不懂（例如超大的延伸標頭）。
+		// 備份照樣留下，但沒有索引就不能試還原。
+		logf("tar scan failed, the backup cannot be test-restored: %v", res.ScanErr)
+	} else {
+		idx := res.Index
+		m.Index = &idx
+	}
+	m.Dropped = res.rows("dropped")
+	m.SkippedMounts = res.rows("skipped-mount")
+	m.WarningCount, m.Warnings = res.WarningCount, res.Warnings
+	m.Size, m.SHA256 = res.Size, res.SHA256
+	m.Seconds = time.Since(began).Seconds()
+}
+
+// listLimit 是「列出檔案」這一趟的時間上限。它在走完整棵樹之前什麼都不會送出來，
+// 所以不能用「多久沒有資料」來判斷它是不是停住了。
+const listLimit = time.Hour
+
+// listLog 收集清單那一趟寫到 stderr 的內容。
+type listLog struct {
+	mu      sync.Mutex
+	proto   [][]string
+	sockets []string
+	// vanished 是「走到一半檔案不見了」這類訊息的數量；other 是其他任何訊息。
+	vanished int
+	other    []string
+}
+
+func (l *listLog) add(line string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if rest, ok := strings.CutPrefix(line, protoPrefix); ok {
+		l.proto = append(l.proto, strings.Split(plain(rest), "\t"))
+		return
+	}
+	if strings.HasPrefix(line, "wsl: ") || tarSummary.MatchString(line) {
+		return
+	}
+	if m := socketLineRe.FindStringSubmatch(line); m != nil {
+		// 檔名要原樣留著去和清單比對，所以不經過 plain。
+		if len(l.sockets) < 100000 {
+			l.sockets = append(l.sockets, m[1])
+		}
+		return
+	}
+	for _, re := range benignTar {
+		if re.MatchString(line) {
+			l.vanished++
+			return
+		}
+	}
+	if len(l.other) < 20 {
+		l.other = append(l.other, plain(line))
+	}
+}
+
+// runListing 讓 distro 裡的 tar 把整棵樹空跑一遍，回傳清單與順便帶回來的資訊。
+// 任何一點不對勁都回傳錯誤：清單是用來判斷「哪些檔案被刪了」的，寧可沒有，也不要一份不完整的。
+func runListing(req *backupRequest) (*listing, distroFacts, clockInfo, error) {
+	req.stage(stageListing)
+	began := time.Now()
+	clock := clockInfo{Windows: began.Unix()}
+	ctx, cancel := context.WithTimeout(context.Background(), listLimit)
+	defer cancel()
+	var stderr listLog
+	stream, err := startInDistro(ctx, req.Distro.Name, withVars(backupScript, req.scriptVars(scriptVar{"WSLBAK_MODE", "list"})...), stderr.add)
+	if err != nil {
+		return nil, distroFacts{}, clock, err
+	}
+	list, parseErr := parseSnapshot(stream.Stdout)
+	code, waitErr := stream.Wait()
+	facts := factsFromProto(stderr.proto)
+	clock.Distro = facts.Clock
+	fail := func(format string, args ...any) (*listing, distroFacts, clockInfo, error) {
+		return nil, facts, clock, fmt.Errorf(format, args...)
+	}
+	if waitErr != nil {
+		return fail("the listing did not end: %v", waitErr)
+	}
+	if f, ok := protoValue(stderr.proto, "error"); ok {
+		return fail("the listing could not start: %s", strings.Join(f, " "))
+	}
+	_, reachedEnd := protoValue(stderr.proto, "done")
+	size, reported := protoValue(stderr.proto, "snapshot-bytes")
+	if !reachedEnd || !reported || len(size) != 1 {
+		return fail("the listing script did not finish (exit %d)", code)
+	}
+	if len(stderr.other) > 0 {
+		return fail("tar said something unexpected while listing: %s", stderr.other[0])
+	}
+	// 走到一半有檔案不見了，tar 會以 1 或 2 結束；那在執行中的系統上是正常的。
+	if code != 0 && (code > 2 || stderr.vanished == 0) {
+		return fail("tar exit %d while listing", code)
+	}
+	if parseErr != nil {
+		return fail("%v", parseErr)
+	}
+	if want, _ := strconv.ParseInt(size[0], 10, 64); want != list.bytes {
+		return fail("received %d bytes of listing, the distro wrote %d", list.bytes, want)
+	}
+	if facts.Clock <= 0 {
+		return fail("the distro did not report its clock")
+	}
+	if err := list.validate(); err != nil {
+		return fail("%v", err)
+	}
+	unmatched := 0
+	for _, quoted := range stderr.sockets {
+		if !list.noteSocket(quoted) {
+			unmatched++
+		}
+	}
+	logf("listing of %s: %d directories, %d names, %d sockets (%d not matched), %d bytes, %.0fs",
+		req.Distro.Name, len(list.dirs), list.entries(), len(stderr.sockets), unmatched, list.bytes, time.Since(began).Seconds())
+	return list, facts, clock, nil
+}
+
+// runBackup 做一次備份，成功時回傳已經寫好的 manifest。
+// 差異模式開著而這次卻做了完整備份時，why 是原因代碼（見 diff.go）。
+func runBackup(req backupRequest) (m *manifest, why string, err error) {
+	if err := os.MkdirAll(req.Dir, 0o755); err != nil {
+		return nil, "", &backupError{failWrite, err.Error()}
+	}
+	cleanPartials(req.Dir)
+	if req.Mode != modeDiff {
+		m, err = runFull(&req, nil)
+		return m, "", err
+	}
+
+	base, why := chooseKind(req.kindQuery(listBackups(req.Dir)))
+	if base != nil {
+		var detail string
+		m, why, detail, err = runDiff(&req, base)
+		if err != nil || m != nil {
+			return m, "", err
+		}
+		logf("%s: no differential this time (%s): %s", req.Distro.Name, why, detail)
+	}
+	m, err = runFull(&req, &why)
+	return m, why, err
+}
+
+// listed 是清單那一趟的結果。
+type listed struct {
+	list  *listing
+	facts distroFacts
+	clock clockInfo
+}
+
+// runFull 做一份完整備份。why 不是 nil 表示差異模式開著：這份完整備份要能當之後差異的基準，
+// 所以打包前後各列一次清單，把兩次都是同一個 inode 的目錄記下來。
+// 清單拿不到不算備份失敗：完整備份照樣是一份可以還原的備份，只是不能當基準，下一次會再做一份完整的。
+func runFull(req *backupRequest, why *string) (*manifest, error) {
+	var before *listed
+	if why != nil {
+		list, facts, clock, err := runListing(req)
+		if err != nil {
+			logf("%s: %v; this full backup cannot be the base of a differential", req.Distro.Name, err)
+			if *why == "" {
+				*why = whyListing
+			}
+		} else {
+			before = &listed{list, facts, clock}
+		}
+	}
+
+	began := time.Now()
+	id := newBackupID(req.Dir)
+	m := &manifest{
+		Schema: fullSchema, ID: id, Distro: req.Distro.Name, DistroID: req.Distro.GUID,
+		Created: began.UTC(), Tool: version, WSL: req.WSL, Archive: id + archiveSuffix,
+		DefaultUID: req.Distro.DefaultUID, Flags: req.Distro.Flags, Excludes: req.Excludes, dir: req.Dir,
+	}
+	var dumped map[string]int64
+	pass := tarPass{Distro: req.Distro.Name, Dir: req.Dir, ID: id, Suffix: archiveSuffix,
+		Vars: req.scriptVars(), Scheduled: req.Scheduled, OnProgress: req.OnProgress}
+	if before != nil {
+		dumped = map[string]int64{}
+		pass.OnEntry = func(e indexEntry) {
+			if e.Type == typeDir {
+				dumped[e.name()] = e.ctime
+			}
+		}
+	}
+	req.stage(stageReading)
+	res, err := runTarPass(pass)
+	if err != nil {
+		return nil, err
+	}
+	m.fill(res, began)
+
+	if before != nil && res.ScanErr == nil {
+		if after, _, _, err := runListing(req); err != nil {
+			logf("%s: %v; this full backup cannot be the base of a differential", req.Distro.Name, err)
+		} else if sum, err := writeDirs(m.dirsPath(), id, stableDirs(before.list, after, dumped)); err != nil {
+			logf("%s: record of directories: %v", id, err)
+		} else {
+			m.DirsSHA256 = sum
+			clock := before.clock
+			m.Clock, m.Since, m.TarVersion = &clock, sinceFor(clock), before.facts.TarVersion
+			for point := range before.facts.Mounts.Points {
+				m.Mounts = append(m.Mounts, point)
+			}
+			sort.Strings(m.Mounts)
+		}
+		m.Seconds = time.Since(began).Seconds()
+	}
+
+	if err := res.keep(m.archivePath()); err != nil {
+		os.Remove(m.dirsPath())
 		return nil, &backupError{failWrite, err.Error()}
 	}
-	keep = true
 	if err := m.save(); err != nil {
 		// 沒有 manifest 的封存不算備份；把它刪掉，不要留一個沒人認得的大檔案。
 		os.Remove(m.archivePath())
-		// 讓收尾的那幾段把檔案索引也當成失敗來處理。
-		keep = false
+		os.Remove(m.indexPath())
+		os.Remove(m.dirsPath())
 		return nil, &backupError{failWrite, err.Error()}
 	}
 	logf("backup %s written: tar %d bytes, archive %d bytes, %d entries, %d warnings, %.0fs",
-		m.ID, idx.Size, m.Size, idx.Entries, m.WarningCount, m.Seconds)
+		m.ID, res.Index.Size, m.Size, res.Index.Entries, m.WarningCount, m.Seconds)
 	return m, nil
+}
+
+// runDiff 試著做一份差異備份。三種結果：
+//   - 寫好了：回傳 manifest。
+//   - 這次不能做差異：m 是 nil，why 是原因，什麼都沒有留下；呼叫端接著做完整備份。
+//   - 真的失敗了（tar 出錯、磁碟滿了）：回傳 err。
+func runDiff(req *backupRequest, base *manifest) (m *manifest, why, detail string, err error) {
+	baseDirs, err := readDirs(base.dirsPath(), base.DirsSHA256)
+	if err != nil {
+		return nil, whyBaseDamaged, err.Error(), nil
+	}
+	if err := ensureIndex(base); err != nil {
+		return nil, whyBaseDamaged, "the file index of the full backup: " + err.Error(), nil
+	}
+	list, facts, clock, err := runListing(req)
+	if err != nil {
+		return nil, whyListing, err.Error(), nil
+	}
+	if problem := environmentProblem(base, facts); problem != "" {
+		return nil, problem, fmt.Sprintf("root file system %q, tar %q (was %q), clock %d (was %d), also mounted at %v",
+			facts.Mounts.RootFS, facts.TarVersion, base.TarVersion, facts.Clock, base.Clock.Distro, facts.Mounts.Aliases), nil
+	}
+
+	began := time.Now()
+	id := newBackupID(req.Dir)
+	x := newExplainer(list, baseDirs, facts.Mounts.Points, base.Since, clock.Distro)
+	for _, point := range base.Mounts {
+		x.baseMounts[point] = true
+	}
+	req.stage(stageReading)
+	res, err := runTarPass(tarPass{Distro: req.Distro.Name, Dir: req.Dir, ID: id, Suffix: diffSuffix,
+		Vars:      req.scriptVars(scriptVar{"WSLBAK_MODE", "diff"}, scriptVar{"WSLBAK_SINCE", strconv.FormatInt(base.Since, 10)}),
+		Scheduled: req.Scheduled, OnProgress: req.OnProgress, OnEntry: x.sawDiffEntry})
+	if err != nil {
+		return nil, "", "", err
+	}
+	give := func(why, detail string) (*manifest, string, string, error) {
+		res.discard()
+		return nil, why, detail, nil
+	}
+	if res.ScanErr != nil {
+		return give(whyStructure, "the tar stream could not be read back: "+res.ScanErr.Error())
+	}
+	if !res.Index.EtcIsDir {
+		return give(whyStructure, "/etc is not among the directories")
+	}
+	if dropped := res.rows("dropped"); !sameStrings(dropped, base.Dropped) {
+		return give(whySettings, fmt.Sprintf("tar options left out: %v, for the full backup: %v", dropped, base.Dropped))
+	}
+	if err := scanIndex(base.indexPath(), func(e indexEntry) bool {
+		x.sawBaseEntry(e)
+		return true
+	}); err != nil {
+		return give(whyBaseDamaged, "the file index of the full backup: "+err.Error())
+	}
+	drop, why, detail := x.finish(base.Index.Entries)
+	if why != "" {
+		return give(why, detail)
+	}
+
+	m = &manifest{
+		Schema: manifestSchema, Kind: kindDiff, ID: id, Distro: req.Distro.Name, DistroID: req.Distro.GUID,
+		Created: began.UTC(), Tool: version, WSL: req.WSL, Archive: id + diffSuffix,
+		DefaultUID: req.Distro.DefaultUID, Flags: req.Distro.Flags, Excludes: req.Excludes, dir: req.Dir,
+		Since: base.Since, Clock: &clock, TarVersion: facts.TarVersion,
+		Base: base.ID, BaseSHA256: base.SHA256, BaseEntries: base.Index.Entries,
+		Drop: packBits(drop), DropCount: x.dropped, base: base,
+	}
+	m.fill(res, began)
+	if err := res.keep(m.archivePath()); err != nil {
+		return nil, "", "", &backupError{failWrite, err.Error()}
+	}
+	if err := m.save(); err != nil {
+		os.Remove(m.archivePath())
+		os.Remove(m.indexPath())
+		return nil, "", "", &backupError{failWrite, err.Error()}
+	}
+	logf("differential %s on %s written: tar %d bytes, archive %d bytes, %d entries; %d of %d entries of the full backup dropped; %d warnings, %.0fs",
+		m.ID, base.ID, res.Index.Size, m.Size, res.Index.Entries, m.DropCount, m.BaseEntries, m.WarningCount, m.Seconds)
+	return m, "", "", nil
 }

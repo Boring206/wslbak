@@ -190,7 +190,7 @@ func TestOverrideReader(t *testing.T) {
 		if len(names) != want || names[want-2] != "./etc/wsl.conf" || names[want-1] != "./etc/wsl-distribution.conf" {
 			t.Errorf("%s: entries after override = %q", tc.name, names)
 		}
-		check, err := scanOverride(bytes.NewReader(out), end)
+		check, err := scanOverride(bytes.NewReader(out), at(end))
 		if err != nil || !check.conf.ours || check.conf.content != inertWSLConf || !check.dist.ours || check.dist.content != inertDistConf {
 			t.Errorf("%s: the override is not what ends up in place: %s, err=%v", tc.name, check.summary(), err)
 		}
@@ -215,7 +215,7 @@ func TestOverrideReaderWrongOffset(t *testing.T) {
 	}
 	// 沒有覆寫的原始封存，最後一個 wsl.conf 不是我們的。
 	original, _ := buildTar(t, sampleEntries())
-	if check, err := scanOverride(bytes.NewReader(original), int64(len(original))); err != nil || !check.conf.found || check.inert() {
+	if check, err := scanOverride(bytes.NewReader(original), at(int64(len(original)))); err != nil || !check.conf.found || check.inert() {
 		t.Errorf("original archive: %s, err=%v", check.summary(), err)
 	}
 }
@@ -257,16 +257,22 @@ func TestScanRealGNUTar(t *testing.T) {
 	if s := got["./fixture/中文檔名 with space.txt"]; s.SHA256 != hex.EncodeToString(sum[:]) {
 		t.Errorf("sample of the file with a Chinese name = %+v", s)
 	}
-	for _, name := range []string{"./etc/passwd", "./fixture/plain.txt", "./fixture/cap-binary", "./fixture/hard1"} {
+	for _, name := range []string{"./etc/passwd", "./fixture/plain.txt", "./fixture/cap-binary"} {
 		if _, ok := got[name]; !ok {
 			t.Errorf("%s should be sampled", name)
 		}
 	}
-	// 9 GiB 的稀疏檔太大不取樣；硬連結的第二個名字、符號連結、fifo、裝置都不是一般檔案。
-	for _, name := range []string{"./fixture/sparse.bin", "./fixture/hard2", "./fixture/symlink", "./fixture/fifo", "./fixture/devnull", "./etc/wsl.conf"} {
+	// 9 GiB 的稀疏檔太大不取樣；符號連結、fifo、裝置都不是一般檔案。
+	for _, name := range []string{"./fixture/sparse.bin", "./fixture/symlink", "./fixture/fifo", "./fixture/devnull", "./etc/wsl.conf"} {
 		if _, ok := got[name]; ok {
 			t.Errorf("%s should not be sampled", name)
 		}
+	}
+	// hard1 與 hard2 是同一個檔案：tar 先遇到的那個名稱是一般檔案（會被取樣），另一個是硬連結（不會）。
+	_, first := got["./fixture/hard1"]
+	_, second := got["./fixture/hard2"]
+	if first == second {
+		t.Errorf("exactly one of hard1 and hard2 should be sampled: hard1 %v, hard2 %v", first, second)
 	}
 
 	// Go 的解析器要看得出稀疏檔的邏輯大小、延伸屬性、capability 與超過 255 個字元的路徑。
@@ -296,8 +302,12 @@ func TestScanRealGNUTar(t *testing.T) {
 	if h := seen["./fixture/acl-file"]; h == nil || !strings.Contains(h.PAXRecords["SCHILY.acl.access"], "user:1234:rw-") {
 		t.Errorf("acl-file lost its ACL: %+v", h)
 	}
-	if h := seen["./fixture/hard2"]; h == nil || h.Typeflag != tar.TypeLink || h.Linkname != "./fixture/hard1" {
-		t.Errorf("hard2 is not a hard link to hard1: %+v", h)
+	file, other := seen["./fixture/hard1"], seen["./fixture/hard2"]
+	if file != nil && file.Typeflag == tar.TypeLink {
+		file, other = other, file
+	}
+	if file == nil || other == nil || file.Typeflag != tar.TypeReg || other.Typeflag != tar.TypeLink || other.Linkname != file.Name {
+		t.Errorf("hard1 and hard2 should be a file and a hard link to it: %+v, %+v", file, other)
 	}
 	if longest < 300 {
 		t.Errorf("the longest path is %d characters; the fixture should contain one well over 255", longest)
@@ -317,10 +327,10 @@ func TestScanRealGNUTar(t *testing.T) {
 	if names := tarNames(t, out); int64(len(names)) != entries+2 {
 		t.Errorf("%d entries after override, want %d", len(names), entries+2)
 	}
-	if check, err := scanOverride(bytes.NewReader(out), idx.EndOffset); err != nil || !check.inert() {
+	if check, err := scanOverride(bytes.NewReader(out), at(idx.EndOffset)); err != nil || !check.inert() {
 		t.Errorf("after override: %s, err=%v", check.summary(), err)
 	}
-	if check, _ := scanOverride(bytes.NewReader(data), idx.EndOffset); !strings.Contains(check.conf.content, "systemd=true") {
+	if check, _ := scanOverride(bytes.NewReader(data), at(idx.EndOffset)); !strings.Contains(check.conf.content, "systemd=true") {
 		t.Errorf("the fixture's own wsl.conf should enable systemd, got %q", check.conf.content)
 	}
 }
@@ -342,7 +352,7 @@ func TestOverrideCannotBeFooled(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		check, err := scanOverride(bytes.NewReader(out), end)
+		check, err := scanOverride(bytes.NewReader(out), at(end))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -392,3 +402,6 @@ func TestOverrideCannotBeFooled(t *testing.T) {
 		t.Errorf("the harmful wsl.conf should be the one seen last: %s content=%q", check.summary(), check.conf.content)
 	}
 }
+
+// at 把固定的位置包成 scanOverride 要的樣子。
+func at(n int64) func() int64 { return func() int64 { return n } }

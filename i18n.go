@@ -238,7 +238,7 @@ type catalog struct {
 	NotifyOKBody          string // 編號, 大小
 
 	// list 與 status
-	ListHeaders          [4]string
+	ListHeaders          [5]string
 	LabelVerified        string
 	LabelNotVerified     string
 	LabelVerifyFailed    string
@@ -391,6 +391,44 @@ type catalog struct {
 	BackupNoTar   string
 	DocTarMissing string // 名稱
 
+	// 差異備份
+	BadMode           string // 值
+	BadFullEvery      string // 值
+	KindFull          string
+	KindDiff          string
+	ProgressListing   string
+	RunWrittenDiff    string // 檔名, 大小, 耗時, 完整備份的編號
+	RunFullBecause    string // 原因
+	WhyAsked          string
+	WhyFirst          string
+	WhyBaseUnverified string
+	WhyBaseDamaged    string
+	WhySettings       string
+	WhyAge            string
+	WhySize           string
+	WhyFailed         string
+	WhyClock          string
+	WhyFilesystem     string
+	WhyAlias          string
+	WhyListing        string
+	WhyMoved          string
+	WhyStructure      string
+	RunChecking       string
+	RunChecked        string // 耗時, 天數
+	RunCheckFailed    string // 原因
+	DryRunWouldDiff   string // 完整備份的編號
+	DryRunWouldFull   string // 原因
+	LabelChecked      string
+	LabelOrphan       string
+	ReasonBase        string
+	ConfigModeFull    string
+	ConfigModeDiff    string // 天數
+	InitDiffHint      string
+	RestoreDiffNote   string // 編號, 完整備份的編號, 完整備份的大小
+	RestoreOrphan     string // 編號, 完整備份的編號
+	RestoreIncomplete string // 名稱
+	NotifyOKChecked   string // 編號, 大小
+
 	// 放在備份資料夾裡的說明檔；兩種語言都會寫進去。
 	RestoreReadme string
 }
@@ -401,12 +439,12 @@ var zhTW = catalog{
 指令：
   init             設定備份：選 distro、目的地、保留份數，並建立每日排程
   config           顯示目前的設定；加上選項則修改設定
-  run              立刻備份一次（備份後自動試還原，再清掉過舊的備份）
+  run              立刻備份一次（備份後自動試還原或檢查，再清掉過舊的備份）
   list             列出現有的備份
   files [編號] [路徑]  列出備份裡某個資料夾的內容（預設是最新一份的根目錄）
   status           顯示排程、上次結果，以及已安裝的執行檔是否完好
   doctor           逐項檢查環境與設定，找出備份跑不起來的原因與修法
-  verify [編號]    對既有的備份重新試還原（預設是最新一份）
+  verify [編號]    對既有的備份重新試還原（預設是最新一份；差異備份會和它的完整備份合併後試還原）
   restore [編號]   把備份還原成新的 distro（預設是最新一份通過試還原的，沒有就用最新一份；不會覆蓋既有的 distro）
   uninstall        移除排程與已安裝的執行檔；備份不會被刪除
 
@@ -425,6 +463,9 @@ var zhTW = catalog{
       --unexclude <樣式>   config：取消一個排除（可重複）
       --enable, --disable  config：啟用或停用某個 distro 的備份
       --private            config：把備份資料夾收緊成只有你的帳號能存取
+      --mode <方式>        config：full 每次都做完整備份（預設）；diff 定期做完整備份，其餘只存變過的東西
+      --full-every <天>    config：diff 模式下，一份完整備份最多用幾天，之後重新做一份（預設 30）
+      --full               run：這次一定做完整備份
       --no-verify          run：這次不試還原
       --find <文字>        files：列出檔名或路徑包含這段文字的項目
       --name <名稱>        restore：還原出來的 distro 要叫什麼
@@ -558,7 +599,7 @@ var zhTW = catalog{
 	NotifyUnverifiedTitle: "wslbak：%s 的備份沒有驗證",
 	NotifyOKTitle:         "wslbak：%s 備份完成",
 	NotifyOKBody:          "%[1]s（%[2]s）已通過試還原。",
-	ListHeaders:           [4]string{"編號", "時間", "大小", "狀態"},
+	ListHeaders:           [5]string{"編號", "時間", "種類", "大小", "狀態"},
 	LabelVerified:         "已驗證",
 	LabelNotVerified:      "未驗證",
 	LabelVerifyFailed:     "驗證失敗",
@@ -699,12 +740,53 @@ var zhTW = catalog{
 	BriefSeeLog:         " 細節在那台電腦的紀錄檔裡（wslbak status 也看得到）。",
 	BackupNoTar:         "這個 distro 沒有安裝 tar。請在 distro 裡安裝 GNU tar，例如 openSUSE：zypper install tar；Fedora：dnf install tar；Alpine：apk add tar。",
 	DocTarMissing:       "%s：裡面沒有安裝 tar",
+	BadMode:             "--mode 只能是 full 或 diff：%s",
+	BadFullEvery:        "--full-every 要是 1 到 365 的整數（天數）：%s",
+	KindFull:            "完整",
+	KindDiff:            "差異",
+	ProgressListing:     "列出檔案中…",
+	RunWrittenDiff:      "已寫入 %[1]s（%[2]s，%[3]s）：完整備份 %[4]s 之後變過的東西",
+	RunFullBecause:      "這次做完整備份：%s",
+	WhyAsked:            "指定了 --full",
+	WhyFirst:            "還沒有可以當基準的完整備份",
+	WhyBaseUnverified:   "上一份完整備份沒有通過試還原",
+	WhyBaseDamaged:      "上一份完整備份的檔案不見了或變了",
+	WhySettings:         "排除清單或 distro 裡的 tar 和上一份完整備份時不同",
+	WhyAge:              "上一份完整備份已經超過設定的天數",
+	WhySize:             "上一份差異已經超過完整備份的一半",
+	WhyFailed:           "上一份差異沒有通過檢查",
+	WhyClock:            "時鐘和上一份完整備份時對不上（被往回調過？）",
+	WhyFilesystem:       "這個 distro 的根檔案系統不是 ext4，差異備份只支援 ext4",
+	WhyAlias:            "distro 裡有資料夾被掛載到另一個位置，同一批檔案會出現兩次",
+	WhyListing:          "無法取得 distro 裡的檔案清單（細節在紀錄檔裡）",
+	WhyMoved:            "有資料夾被改名或搬動過，裡面沒變的檔案要重新備份",
+	WhyStructure:        "寫出來的差異沒有通過檢查，已經丟棄（細節在紀錄檔裡）",
+	RunChecking:         "檢查…",
+	RunChecked:          "檢查通過：備份檔完好，它的完整備份也在（%[1]s）。合併後的試還原每 %[2]d 天做一次。",
+	RunCheckFailed:      "檢查沒有通過：%s",
+	DryRunWouldDiff:     "會做差異備份（依據完整備份 %s）",
+	DryRunWouldFull:     "會做完整備份：%s",
+	LabelChecked:        "已檢查",
+	LabelOrphan:         "缺完整備份",
+	ReasonBase:          "它所依據的完整備份不在了，或不是當初那一份",
+	ConfigModeFull:      "備份方式：每次完整",
+	ConfigModeDiff:      "備份方式：差異（每 %d 天做一次完整，其餘只存變過的東西）",
+	InitDiffHint:        "想省空間的話：wslbak config --mode diff 會改成定期做完整備份，其餘的日子只存變過的東西。",
+	RestoreDiffNote:     "%[1]s 是差異備份，會和完整備份 %[2]s（%[3]s）合併後還原。",
+	RestoreOrphan:       "%[1]s 是差異備份，但它所依據的完整備份 %[2]s 不在了（或不是當初那一份），沒辦法還原成一個 distro。請改用別份。",
+	RestoreIncomplete:   "還原沒有完成，但 WSL 可能已經建立了不完整的 distro %[1]s。請不要使用它；確認之後自行把它取消註冊（wslbak 不會移除任何 distro）。",
+	NotifyOKChecked:     "%[1]s（%[2]s）已通過檢查。",
 	RestoreReadme: `這個資料夾是 wslbak 做的 WSL 備份（https://github.com/Boring206/wslbak）
 
-每個子資料夾是一個 distro。一份備份有三個檔案：
+每個子資料夾是一個 distro。一份完整備份有三個檔案：
   <編號>.tar.gz   整個 distro，標準的 tar 封存
   <編號>.json     這份備份的資訊（大小、檢查碼、試還原的結果）
   <編號>.idx.gz   裡面的檔案清單（wslbak files 用的，還原時用不到）
+
+開了差異備份（wslbak config --mode diff）的話，還會有：
+  <編號>.diff.tar.gz   差異備份：只有某一份完整備份之後變過的檔案。它自己不是一個完整的 distro；
+                       同編號的 .json 裡，base 寫著它依據的是哪一份完整備份
+  <編號>.dirs.gz       完整備份當時的目錄清單（做差異備份時用的，還原時用不到）
 
 要還原時，在這個資料夾開啟 PowerShell 或命令提示字元，執行：
 
@@ -722,9 +804,13 @@ var zhTW = catalog{
   .\wslbak.exe files /home/me
   .\wslbak.exe restore --path /home/me/notes.md --into /home/me/recovered
 
-沒有 wslbak 也能手動還原（備份檔就是一般的 tar.gz）：
+沒有 wslbak 也能手動還原完整備份（備份檔就是一般的 tar.gz）：
 
   wsl --import <新名稱> <放虛擬磁碟的資料夾> <distro>\<編號>.tar.gz --version 2
+
+差異備份（.diff.tar.gz）不能這樣匯入。用上面的 wslbak.exe restore：它會把差異和完整備份合起來，
+還原成差異那一天的樣子。沒有 wslbak 的話，匯入完整備份可以回到完整備份那一天；
+差異備份本身也是一般的 tar.gz，可以用任何 tar 打開，取出裡面個別的檔案。
 
 手動匯入的 distro 會以 root 登入。要改回來，在它裡面建立 /etc/wsl.conf，內容是：
   [user]
@@ -738,12 +824,12 @@ var enUS = catalog{
 Commands:
   init             Set up backups: pick the distro, destination and how many to keep, and create a daily task
   config           Show the current settings; with options, change them
-  run              Back up now (then test-restore the backup and prune old ones)
+  run              Back up now (then test-restore or check the backup, and prune old ones)
   list             List existing backups
   files [id] [path]  List what a backup holds in a folder (default: the root of the newest backup)
   status           Show the schedule, the last result, and whether the installed program is intact
   doctor           Check the environment and settings one by one, with a fix for whatever would stop backups
-  verify [id]      Test-restore an existing backup again (default: the newest)
+  verify [id]      Test-restore an existing backup again (default: the newest; a differential is restored together with its full backup)
   restore [id]     Restore a backup as a new distro (default: the newest verified one, else the newest; never overwrites a distro)
   uninstall        Remove the scheduled task and the installed program; backups are kept
 
@@ -762,6 +848,9 @@ Options:
       --unexclude <pattern>  config: stop excluding a pattern (repeatable)
       --enable, --disable    config: turn backups of one distro on or off
       --private              config: let only your account open the backup folder
+      --mode <how>           config: full makes a full backup every time (default); diff makes one now and then, and otherwise stores only what changed
+      --full-every <days>    config: with diff, for how many days a full backup is built on before a new one is made (default 30)
+      --full                 run: make a full backup this time
       --no-verify            run: skip the test restore this time
       --find <text>          files: list entries whose name or path contains this text
       --name <name>          restore: name of the restored distro
@@ -895,7 +984,7 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	NotifyUnverifiedTitle: "wslbak: backup of %s was not verified",
 	NotifyOKTitle:         "wslbak: backup of %s finished",
 	NotifyOKBody:          "%[1]s (%[2]s) passed its test restore.",
-	ListHeaders:           [4]string{"ID", "TIME", "SIZE", "STATUS"},
+	ListHeaders:           [5]string{"ID", "TIME", "KIND", "SIZE", "STATUS"},
 	LabelVerified:         "verified",
 	LabelNotVerified:      "not verified",
 	LabelVerifyFailed:     "verification failed",
@@ -1036,12 +1125,55 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	BriefSeeLog:         " Details are in the log file on that PC (wslbak status shows them too).",
 	BackupNoTar:         "This distro has no tar installed. Install GNU tar inside it, for example zypper install tar on openSUSE, dnf install tar on Fedora, apk add tar on Alpine.",
 	DocTarMissing:       "%s: it has no tar installed",
+	BadMode:             "--mode must be full or diff: %s",
+	BadFullEvery:        "--full-every must be a whole number of days from 1 to 365: %s",
+	KindFull:            "full",
+	KindDiff:            "diff",
+	ProgressListing:     "listing files…",
+	RunWrittenDiff:      "wrote %[1]s (%[2]s, %[3]s): what changed since the full backup %[4]s",
+	RunFullBecause:      "A full backup this time: %s",
+	WhyAsked:            "--full was given",
+	WhyFirst:            "there is no full backup yet that a differential can build on",
+	WhyBaseUnverified:   "the last full backup did not pass its test restore",
+	WhyBaseDamaged:      "the files of the last full backup are missing or have changed",
+	WhySettings:         "the exclude list or the distro's tar is not what it was for the last full backup",
+	WhyAge:              "the last full backup is older than the configured number of days",
+	WhySize:             "the last differential had grown to more than half the size of the full backup",
+	WhyFailed:           "the last differential did not pass its check",
+	WhyClock:            "the clock does not fit the last full backup (was it set back?)",
+	WhyFilesystem:       "the distro's root file system is not ext4, the only one differential backups support",
+	WhyAlias:            "a folder of the distro is mounted at a second place inside it, so the same files appear twice",
+	WhyListing:          "the list of the distro's files could not be read (details are in the log file)",
+	WhyMoved:            "a folder was renamed or moved, and the unchanged files in it have to be backed up again",
+	WhyStructure:        "the differential that was written did not pass its check and was discarded (details are in the log file)",
+	RunChecking:         "Checking…",
+	RunChecked:          "check passed: the archive is intact and its full backup is in place (%[1]s). A test restore of the two together is done every %[2]d days.",
+	RunCheckFailed:      "the check did not pass: %s",
+	DryRunWouldDiff:     "would make a differential backup (on the full backup %s)",
+	DryRunWouldFull:     "would make a full backup: %s",
+	LabelChecked:        "checked",
+	LabelOrphan:         "full backup missing",
+	ReasonBase:          "the full backup it was made from is missing, or is not the same file any more",
+	ConfigModeFull:      "Backups: a full one every time",
+	ConfigModeDiff:      "Backups: differential (a full one every %d days, otherwise only what changed)",
+	InitDiffHint:        "To use less space: wslbak config --mode diff makes a full backup now and then, and on the other days stores only what changed.",
+	RestoreDiffNote:     "%[1]s is a differential backup; it is restored together with the full backup %[2]s (%[3]s).",
+	RestoreOrphan:       "%[1]s is a differential backup, and the full backup %[2]s it was made from is missing (or is not the same file any more), so it cannot be restored as a distro. Choose another backup.",
+	RestoreIncomplete:   "The restore did not finish, but WSL may have created an incomplete distro %[1]s. Do not use it; after checking, unregister it yourself (wslbak never removes a distro).",
+	NotifyOKChecked:     "%[1]s (%[2]s) passed its check.",
 	RestoreReadme: `WSL backups made by wslbak (https://github.com/Boring206/wslbak)
 
-Each subfolder is one distro. A backup is three files:
+Each subfolder is one distro. A full backup is three files:
   <id>.tar.gz   the whole distro as a standard tar archive
   <id>.json     details about that backup (size, checksum, test-restore result)
   <id>.idx.gz   the list of files in it (for wslbak files; not needed to restore)
+
+With differential backups switched on (wslbak config --mode diff) there are also:
+  <id>.diff.tar.gz   a differential backup: only the files that changed since one full
+                     backup. It is not a whole distro by itself; "base" in the .json of
+                     the same id names the full backup it was made from
+  <id>.dirs.gz       the list of directories at the time of a full backup (used when
+                     making differentials; not needed to restore)
 
 To restore, open PowerShell or Command Prompt in this folder and run:
 
@@ -1060,9 +1192,15 @@ new folder inside the distro:
   .\wslbak.exe files /home/me
   .\wslbak.exe restore --path /home/me/notes.md --into /home/me/recovered
 
-Without wslbak, the same thing by hand (the archive is a plain tar.gz):
+Without wslbak, a full backup can be restored by hand (the archive is a plain tar.gz):
 
   wsl --import <NewName> <FolderForItsDisk> <distro>\<id>.tar.gz --version 2
+
+A differential backup (.diff.tar.gz) cannot be imported like that. Use wslbak.exe restore
+as above: it puts the differential and its full backup together and restores the distro
+as it was on the day of the differential. Without wslbak, importing the full backup
+brings back the day of the full backup; a differential is itself a plain tar.gz that
+any tar can open, to take single files out of it.
 
 After importing by hand the distro logs in as root. To change that, create
 /etc/wsl.conf inside it containing:

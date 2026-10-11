@@ -18,8 +18,9 @@ import (
 // settingFlags 是會修改設定的旗標；perDistro 的那些需要知道是哪個 distro。
 var (
 	settingFlags = []string{"--keep", "--keep-weekly", "--keep-monthly", "--at", "--webhook", "--notify", "--verify",
-		"--exclude", "--unexclude", "--enable", "--disable"}
-	perDistroFlags = []string{"--keep", "--keep-weekly", "--keep-monthly", "--exclude", "--unexclude", "--enable", "--disable"}
+		"--exclude", "--unexclude", "--enable", "--disable", "--mode", "--full-every"}
+	perDistroFlags = []string{"--keep", "--keep-weekly", "--keep-monthly", "--exclude", "--unexclude", "--enable", "--disable",
+		"--mode", "--full-every"}
 )
 
 func anyGiven(o options, flags []string) bool {
@@ -90,6 +91,26 @@ func applySettings(cfg *config, distro string, o options) ([]settingChange, erro
 	number("--keep", &dc.Keep, o.keep)
 	number("--keep-weekly", &dc.KeepWeekly, o.keepWeekly)
 	number("--keep-monthly", &dc.KeepMonthly, o.keepMonthly)
+	if o.has("--mode") {
+		want := ""
+		if o.mode == modeDiff {
+			want = modeDiff
+		}
+		if dc.Mode != want {
+			show := func(mode string) string {
+				if mode == modeDiff {
+					return modeDiff
+				}
+				return modeFull
+			}
+			note("--mode", show(dc.Mode), show(want))
+			dc.Mode = want
+		}
+	}
+	if o.has("--full-every") && dc.fullEvery() != o.fullEvery {
+		note("--full-every", strconv.Itoa(dc.fullEvery()), strconv.Itoa(o.fullEvery))
+		dc.FullEvery = o.fullEvery
+	}
 
 	for _, pattern := range o.exclude {
 		if !slices.Contains(dc.excludes(), pattern) {
@@ -169,6 +190,11 @@ func printSettings(cfg *config) {
 		fmt.Printf("\n%s  %s\n", bold(name), dim(filepath.Join(dc.Dest, name)))
 		if !dc.Enabled {
 			fmt.Println("  " + yellow(T.StatusDisabled))
+		}
+		if dc.Mode == modeDiff {
+			fmt.Printf("  "+T.ConfigModeDiff+"\n", dc.fullEvery())
+		} else {
+			fmt.Println("  " + T.ConfigModeFull)
 		}
 		fmt.Printf("  "+T.ConfigKeep+"\n", keepText(dc))
 		fmt.Printf("  "+T.ConfigExcludes+"\n", strings.Join(dc.excludes(), T.ListSep))

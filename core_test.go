@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -297,6 +298,48 @@ func TestPlanRetention(t *testing.T) {
 	}
 }
 
+// 差異備份要和它的完整備份合起來才還原得出東西：只要還有差異被留下，它的完整備份就留下。
+func TestPlanRetentionKeepsWhatDifferentialsNeed(t *testing.T) {
+	full := func(id string) *manifest { return backup(id, true) }
+	diff := func(id string, base *manifest, ok bool) *manifest {
+		m := backup(id, ok)
+		m.Kind, m.Base, m.base = kindDiff, base.ID, base
+		return m
+	}
+	orphan := func(id string) *manifest {
+		m := backup(id, true)
+		m.Kind, m.Base = kindDiff, "0"
+		return m
+	}
+	a, b := full("10"), full("20")
+	cases := []struct {
+		label   string
+		backups []*manifest
+		keep    int
+		verify  string
+		want    string
+	}{
+		// 留最新 3 份：三份都是差異，它們的完整備份排在第 6，卻不能刪。
+		{"the full backup stays while a kept differential needs it",
+			[]*manifest{a, diff("11", a, true), diff("12", a, true), diff("13", a, true), diff("14", a, true), diff("15", a, true)}, 3, verifyRestore, "12 11"},
+		// 新的一輪開始了：舊的完整備份只在還有舊差異被留下時才留著。
+		{"the old full backup goes with its last differential",
+			[]*manifest{a, diff("11", a, true), diff("12", a, true), b, diff("21", b, true), diff("22", b, true)}, 3, verifyRestore, "12 11 10"},
+		{"…and stays while one of them is kept",
+			[]*manifest{a, diff("11", a, true), diff("12", a, true), b, diff("21", b, true)}, 3, verifyRestore, "11"},
+		{"a differential that failed its check does not count as a good backup",
+			[]*manifest{a, diff("11", a, true), diff("12", a, false), diff("13", a, false), diff("14", a, false)}, 1, verifyRestore, "12"},
+		// 完整備份不見了的差異還原不出東西：就算關掉驗證也不算數，最多留兩份查原因。
+		{"orphans are never good backups",
+			[]*manifest{a, orphan("11"), orphan("12"), orphan("13")}, 5, verifyNone, "11"},
+	}
+	for _, c := range cases {
+		if got := ids(planRetention(c.backups, retention{Last: c.keep}, c.verify)); got != c.want {
+			t.Errorf("%s: would delete %q, want %q", c.label, got, c.want)
+		}
+	}
+}
+
 // 每天 03:00（UTC）一份，從 from 往回 days 天。
 func daily(from time.Time, days int) []*manifest {
 	var list []*manifest
@@ -390,6 +433,10 @@ func TestNewerManifests(t *testing.T) {
 		t.Error("a file that is not named like a backup must be ignored")
 	}
 	os.WriteFile(filepath.Join(dir, "20261002T030000Z.json"), []byte(`{"schema": 2, "kind": "diff"}`), 0o644)
+	if newerManifests(dir) {
+		t.Error("a differential backup is a format this version knows")
+	}
+	os.WriteFile(filepath.Join(dir, "20261003T030000Z.json"), []byte(`{"schema": 3, "kind": "later"}`), 0o644)
 	if !newerManifests(dir) {
 		t.Error("a manifest with a newer schema should be noticed")
 	}
@@ -631,8 +678,42 @@ func TestConfigAndManifestOnDisk(t *testing.T) {
 		t.Errorf("excludes without defaults = %q", ex)
 	}
 
-	// 更新版本寫的設定檔：舊版不能讀，也不能覆寫。
+	// 沒用到差異備份時，設定檔仍然是 0.1.x 讀得懂的格式；開了才換成新的。
 	path, _ := configPath()
+	schemaOnDisk := func() string {
+		data, _ := os.ReadFile(path)
+		var head struct {
+			Schema int `json:"schema"`
+		}
+		json.Unmarshal(data, &head)
+		return fmt.Sprintf("%d mode:%v every:%v", head.Schema, strings.Contains(string(data), `"mode"`), strings.Contains(string(data), `"fullEvery"`))
+	}
+	if got := schemaOnDisk(); got != "1 mode:false every:false" {
+		t.Errorf("a configuration without differential backups: %s", got)
+	}
+	cfg.Distros["Ubuntu"].Mode, cfg.Distros["Ubuntu"].FullEvery = modeDiff, 14
+	if err := saveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := schemaOnDisk(); got != "2 mode:true every:true" {
+		t.Errorf("a configuration with differential backups: %s", got)
+	}
+	if got, err = loadConfig(); err != nil || got.Distros["Ubuntu"].Mode != modeDiff || got.Distros["Ubuntu"].fullEvery() != 14 {
+		t.Errorf("differential settings did not survive a round trip: %+v, %v", got.Distros["Ubuntu"], err)
+	}
+	// 手改出來的怪值：不認得的模式當成完整，超出範圍的天數當成預設。
+	cfg.Distros["Ubuntu"].Mode, cfg.Distros["Ubuntu"].FullEvery = "weekly", 9999
+	saveConfig(cfg)
+	if got, err = loadConfig(); err != nil || got.Distros["Ubuntu"].Mode != "" || got.Distros["Ubuntu"].fullEvery() != defaultFullEvery {
+		t.Errorf("odd values in the file: %+v, %v", got.Distros["Ubuntu"], err)
+	}
+	cfg.Distros["Ubuntu"].Mode, cfg.Distros["Ubuntu"].FullEvery = "", 0
+	saveConfig(cfg)
+	if got := schemaOnDisk(); got != "1 mode:false every:false" {
+		t.Errorf("after switching differential backups off again: %s", got)
+	}
+
+	// 更新版本寫的設定檔：舊版不能讀，也不能覆寫。
 	os.WriteFile(path, []byte(`{"schema": 99, "future": true}`), 0o644)
 	if _, err := loadConfig(); err != errNewerConfig {
 		t.Errorf("newer schema: err = %v", err)
@@ -811,6 +892,31 @@ func TestApplySettings(t *testing.T) {
 	}
 	if cfg.Distros["Debian"].Keep != 3 || !cfg.Distros["Debian"].Enabled {
 		t.Errorf("another distro was changed: %+v", cfg.Distros["Debian"])
+	}
+
+	// 差異備份：開、調天數、關。和現在一樣的值不算變更。
+	cfg = fresh()
+	changes, err = applySettings(cfg, "Ubuntu", given(options{mode: modeDiff, fullEvery: 14}, "--mode", "--full-every"))
+	if u = cfg.Distros["Ubuntu"]; err != nil || flags(changes) != "--mode --full-every" || u.Mode != modeDiff || u.fullEvery() != 14 {
+		t.Errorf("switching differential backups on: %v, %v, %+v", changes, err, u)
+	}
+	if changes[0].Old != "full" || changes[0].New != "diff" || changes[1].Old != "30" || changes[1].New != "14" {
+		t.Errorf("the change list should show full → diff and 30 → 14: %+v", changes)
+	}
+	if cfg.Distros["Debian"].Mode != "" {
+		t.Error("another distro was switched to differential backups")
+	}
+	changes, err = applySettings(cfg, "Ubuntu", given(options{mode: modeDiff, fullEvery: 14}, "--mode", "--full-every"))
+	if err != nil || len(changes) != 0 {
+		t.Errorf("the same mode again was reported as a change: %v, %v", changes, err)
+	}
+	changes, err = applySettings(cfg, "Ubuntu", given(options{mode: modeFull}, "--mode"))
+	if err != nil || flags(changes) != "--mode" || cfg.Distros["Ubuntu"].Mode != "" {
+		t.Errorf("switching back to full backups: %v, %v, %q", changes, err, cfg.Distros["Ubuntu"].Mode)
+	}
+	cfg = fresh()
+	if changes, err = applySettings(cfg, "Ubuntu", given(options{mode: modeFull, fullEvery: defaultFullEvery}, "--mode", "--full-every")); err != nil || len(changes) != 0 {
+		t.Errorf("the defaults were reported as changes: %v, %v", changes, err)
 	}
 
 	// 取消自己加的排除。
@@ -1070,7 +1176,7 @@ func TestSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sel, stats, err := resolveSelection(file, []string{"/home/me/project/", "/etc/hosts", "home/me/project"})
+	sel, stats, err := resolveSelection(scanOf(file), []string{"/home/me/project/", "/etc/hosts", "home/me/project"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1104,14 +1210,14 @@ func TestSelection(t *testing.T) {
 		}
 	}
 
-	_, stats, err = resolveSelection(file, []string{"/etc/hosts", "/etc/shadow", "/nope/x"})
+	_, stats, err = resolveSelection(scanOf(file), []string{"/etc/hosts", "/etc/shadow", "/nope/x"})
 	if err != nil || !reflect.DeepEqual(stats.Missing, []string{"/etc/shadow", "/nope/x"}) {
 		t.Errorf("missing paths: %v, %v", stats.Missing, err)
 	}
-	if _, _, err = resolveSelection(file, []string{"/"}); err == nil {
+	if _, _, err = resolveSelection(scanOf(file), []string{"/"}); err == nil {
 		t.Error("selecting the root should be refused")
 	}
-	if _, _, err = resolveSelection(file, []string{"/etc/../home"}); err == nil {
+	if _, _, err = resolveSelection(scanOf(file), []string{"/etc/../home"}); err == nil {
 		t.Error("a path with .. should be refused")
 	}
 }
@@ -1461,4 +1567,9 @@ func TestLockStamp(t *testing.T) {
 	if stuckAfter >= 24*time.Hour {
 		t.Errorf("stuckAfter is %v; the next day's run starts just under 24 hours later and would not notice", stuckAfter)
 	}
+}
+
+// scanOf 把一個索引檔包成 resolveSelection 要的樣子。
+func scanOf(file string) func(visit func(indexEntry) bool) error {
+	return func(visit func(indexEntry) bool) error { return scanIndex(file, visit) }
 }

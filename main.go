@@ -39,10 +39,13 @@ type options struct {
 	into        string
 	paths       []string
 	find        string
+	mode        string // config：full 或 diff
+	fullEvery   int    // config：差異模式下，完整備份最多用幾天
 	home        string // 測試用：把設定、紀錄與驗證用的暫存都放到這個資料夾
 
 	dryRun    bool
 	noVerify  bool
+	full      bool // run：這次一定做完整備份
 	scheduled bool // 由排程工作啟動：還沒到期就直接結束，也不詢問任何事
 	yes       bool
 	all       bool
@@ -65,8 +68,8 @@ func (o *options) has(flag string) bool { return o.given[flag] }
 var commandFlags = map[string][]string{
 	"init": {"--distro", "--all", "--dest", "--keep", "--keep-weekly", "--keep-monthly", "--at", "--webhook", "--dry-run", "--yes"},
 	"config": {"--distro", "--keep", "--keep-weekly", "--keep-monthly", "--at", "--webhook", "--notify", "--verify",
-		"--exclude", "--unexclude", "--enable", "--disable", "--private", "--dry-run"},
-	"run":       {"--distro", "--no-verify", "--dry-run", "--scheduled"},
+		"--exclude", "--unexclude", "--enable", "--disable", "--private", "--mode", "--full-every", "--dry-run"},
+	"run":       {"--distro", "--no-verify", "--full", "--dry-run", "--scheduled"},
 	"list":      {"--distro"},
 	"files":     {"--distro", "--find"},
 	"status":    {},
@@ -94,10 +97,12 @@ var (
 		"--distro": true, "--dest": true, "--keep": true, "--keep-weekly": true, "--keep-monthly": true,
 		"--at": true, "--webhook": true, "--notify": true, "--verify": true, "--exclude": true, "--unexclude": true,
 		"--name": true, "--to": true, "--path": true, "--into": true, "--find": true, "--home": true, "--lang": true,
+		"--mode": true, "--full-every": true,
 	}
 	boolFlags = map[string]bool{
 		"--dry-run": true, "--no-verify": true, "--scheduled": true, "--yes": true, "--all": true,
 		"--enable": true, "--disable": true, "--private": true, "--help": true, "--version": true, "--debug": true,
+		"--full": true,
 	}
 	shortFlags = map[string]string{"-d": "--distro", "-n": "--dry-run", "-y": "--yes", "-h": "--help", "-v": "--version"}
 )
@@ -205,6 +210,17 @@ func (o *options) setValue(name, value string) error {
 		o.into = value
 	case "--find":
 		o.find = value
+	case "--mode":
+		if value != modeFull && value != modeDiff {
+			return fmt.Errorf(T.BadMode, value)
+		}
+		o.mode = value
+	case "--full-every":
+		n, perr := strconv.Atoi(value)
+		if perr != nil || n < 1 || n > maxFullEvery {
+			return fmt.Errorf(T.BadFullEvery, value)
+		}
+		o.fullEvery = n
 	case "--home":
 		o.home = value
 	case "--lang":
@@ -222,6 +238,8 @@ func (o *options) setBool(name string) {
 		o.dryRun = true
 	case "--no-verify":
 		o.noVerify = true
+	case "--full":
+		o.full = true
 	case "--scheduled":
 		o.scheduled = true
 	case "--yes":

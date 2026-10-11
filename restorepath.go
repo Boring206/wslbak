@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -16,8 +14,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/klauspost/compress/gzip"
 )
 
 // 只取回備份裡的某些檔案或資料夾（restore --path … --into …）。
@@ -66,9 +62,9 @@ type selectionStats struct {
 	Missing []string // 索引裡找不到的路徑
 }
 
-// resolveSelection 把使用者給的路徑和索引對照。路徑只拿來比對，不會原樣交給任何指令；
-// 索引裡沒有的路徑會列在 Missing 裡。
-func resolveSelection(indexFile string, paths []string) (*selection, selectionStats, error) {
+// resolveSelection 把使用者給的路徑和還原點裡的項目對照（scan 逐筆給出那些項目）。
+// 路徑只拿來比對，不會原樣交給任何指令；找不到的路徑會列在 Missing 裡。
+func resolveSelection(scan func(visit func(indexEntry) bool) error, paths []string) (*selection, selectionStats, error) {
 	sel := &selection{extras: map[string]bool{}}
 	var stats selectionStats
 	for _, p := range paths {
@@ -86,7 +82,7 @@ func resolveSelection(indexFile string, paths []string) (*selection, selectionSt
 	found := map[string]bool{}
 	selected := map[string]bool{}
 	var links []string
-	err := scanIndex(indexFile, func(e indexEntry) bool {
+	err := scan(func(e indexEntry) bool {
 		name := e.name()
 		for _, root := range sel.roots {
 			if name == root || strings.HasPrefix(name, root+"/") {
@@ -184,16 +180,19 @@ func cmdRestorePath(opts options) int {
 	}
 	var m *manifest
 	if opts.id != "" {
-		if m = readManifest(source.Dir, opts.id); m == nil {
+		if m = findBackup(source.Dir, opts.id); m == nil {
 			return fail(fmt.Errorf(T.NoSuchBackup, opts.id))
 		}
 	} else {
 		backups := listBackups(source.Dir)
 		if m = newest(backups, true); m == nil {
-			if m = newest(backups, false); m == nil {
+			if m = newestRestorable(backups); m == nil {
 				return fail(fmt.Errorf(T.NoBackups, source.Dir))
 			}
 		}
+	}
+	if m.orphan() {
+		return fail(fmt.Errorf(T.RestoreOrphan, m.ID, m.Base))
 	}
 	// 檔案只放回這份備份所屬的 distro。備份資料夾裡的紀錄寫著別的名字時，寧可不做。
 	if !strings.EqualFold(m.Distro, source.Distro) {
@@ -202,7 +201,7 @@ func cmdRestorePath(opts options) int {
 	if err := ensureIndex(m); err != nil {
 		return fail(fmt.Errorf(T.FilesNoIndex, m.ID, err))
 	}
-	sel, stats, err := resolveSelection(m.indexPath(), opts.paths)
+	sel, stats, err := resolveSelection(func(visit func(indexEntry) bool) error { return scanEntries(m, visit) }, opts.paths)
 	if err != nil {
 		return fail(err)
 	}
@@ -262,19 +261,42 @@ func cmdRestorePath(opts options) int {
 	reportedTar, _ := protoValue(rows, "tar")
 
 	// 2. 讀備份檔、濾出選中的項目、送進 distro 解開。
+	// produce 把選中的項目寫出去；changed 在那之後回報備份檔是不是和備份當時不一樣了。
 	fmt.Println(T.PathExtracting)
-	file, err := os.Open(m.archivePath())
-	if err != nil {
-		return fail(err)
+	chosen := func(e rawEntry) bool { return sel.wants(e.Name) }
+	progress := &progressReader{}
+	var produce func(out io.Writer) error
+	var changed func() bool
+	if m.isDiff() {
+		// 差異的還原點：完整備份裡還留著的，加上差異裡的，每個路徑只會出現一次。
+		differs := false
+		produce = func(out io.Writer) error {
+			err := writeMerged(m, out, mergeOptions{Want: chosen, Progress: progress})
+			var other *errArchiveChanged
+			if errors.As(err, &other) {
+				// 項目都已經寫出去了，只是讀到最後發現檔案和備份當時不同。
+				differs = true
+				return nil
+			}
+			return err
+		}
+		changed = func() bool { return differs }
+	} else {
+		archive, err := openArchive(m.archivePath())
+		if err != nil {
+			return fail(fmt.Errorf(T.RestoreCorrupt, m.Archive))
+		}
+		defer archive.Close()
+		progress.r = archive
+		produce = func(out io.Writer) error {
+			_, err := walkTar(progress, out, chosen)
+			return err
+		}
+		changed = func() bool {
+			_, err := io.Copy(io.Discard, archive.hashed)
+			return err != nil || hex.EncodeToString(archive.sum.Sum(nil)) != m.SHA256
+		}
 	}
-	defer file.Close()
-	sum := sha256.New()
-	hashed := io.TeeReader(bufio.NewReaderSize(file, 1<<20), sum)
-	zr, err := gzip.NewReader(hashed)
-	if err != nil {
-		return fail(fmt.Errorf(T.RestoreCorrupt, m.Archive))
-	}
-	defer zr.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), importTimeout)
 	defer cancel()
@@ -288,7 +310,6 @@ func cmdRestorePath(opts options) int {
 	var tarOut strings.Builder
 	cmd.Stdout, cmd.Stderr = &tarOut, &tarOut
 
-	progress := &progressReader{r: zr}
 	bar := &progressLine{label: T.ProgressScanning}
 	stop := make(chan struct{})
 	go func() {
@@ -305,7 +326,7 @@ func cmdRestorePath(opts options) int {
 	}()
 	walked := make(chan error, 1)
 	go func() {
-		_, err := walkTar(progress, pipeW, func(e rawEntry) bool { return sel.wants(e.Name) })
+		err := produce(pipeW)
 		if err == nil {
 			// 接上結尾標記，解開的那一端才知道結束了。
 			_, err = pipeW.Write(make([]byte, 2*tarBlock))
@@ -347,7 +368,7 @@ func cmdRestorePath(opts options) int {
 		return fail(problem)
 	}
 	// 4. 整個備份檔都讀過了，順便確認它和備份當時一樣。
-	if _, err := io.Copy(io.Discard, hashed); err != nil || hex.EncodeToString(sum.Sum(nil)) != m.SHA256 {
+	if changed() {
 		fmt.Fprintln(os.Stderr, yellow(fmt.Sprintf(T.PathArchiveChanged, m.Archive)))
 		return 2
 	}

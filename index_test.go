@@ -188,8 +188,13 @@ func TestScanTarFeedsTheIndex(t *testing.T) {
 	if e := byName["./fixture/sparse.bin"]; e.Type != typeFile || e.Size != 9<<30 {
 		t.Errorf("sparse.bin should be listed with its logical size: %+v", e)
 	}
-	if e := byName["./fixture/hard2"]; e.Type != typeHardlink || e.Link != "./fixture/hard1" {
-		t.Errorf("hard2: %+v", e)
+	// 兩個名稱是同一個檔案：tar 先遇到哪一個，那一個就是檔案，另一個是指向它的硬連結。
+	file, other := byName["./fixture/hard1"], byName["./fixture/hard2"]
+	if file.Type == typeHardlink {
+		file, other = other, file
+	}
+	if file.Type != typeFile || other.Type != typeHardlink || other.Link != file.name() {
+		t.Errorf("hard1 and hard2 should be a file and a hard link to it: %+v, %+v", file, other)
 	}
 	if e := byName["./fixture/symlink"]; e.Type != typeSymlink || e.Link != "plain.txt" {
 		t.Errorf("symlink: %+v", e)

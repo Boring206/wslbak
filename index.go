@@ -56,6 +56,10 @@ type indexEntry struct {
 	UID   int    `json:"u"`
 	GID   int    `json:"g"`
 	Link  string `json:"l,omitempty"` // 符號連結或硬連結指向的名稱
+
+	// ctime 是 inode 的變更時間（奈秒），封存裡每個項目都帶著。它不寫進索引：
+	// 只有備份當下拿來判斷目錄有沒有變過。封存裡沒有時是 0。
+	ctime int64
 }
 
 // name 回傳項目的名稱（原始位元組）。
@@ -84,6 +88,9 @@ func entryFromHeader(h *tar.Header) indexEntry {
 		Mode:  uint32(h.Mode) & 0o7777,
 		UID:   h.Uid,
 		GID:   h.Gid,
+	}
+	if !h.ChangeTime.IsZero() {
+		e.ctime = h.ChangeTime.UnixNano()
 	}
 	name := cleanMember(h.Name)
 	if utf8.ValidString(name) {
@@ -161,32 +168,66 @@ func (w *indexWriter) close(ok bool) error {
 
 var errBadIndex = errors.New("not a wslbak file index")
 
+// indexReader 一筆一筆讀索引。
+type indexReader struct {
+	file *os.File
+	zr   *gzip.Reader
+	dec  *json.Decoder
+}
+
+func openIndex(file string) (*indexReader, error) {
+	f, err := os.Open(file)
+	if err != nil {
+		return nil, err
+	}
+	zr, err := gzip.NewReader(bufio.NewReaderSize(f, 256<<10))
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("%w: %v", errBadIndex, err)
+	}
+	r := &indexReader{file: f, zr: zr, dec: json.NewDecoder(zr)}
+	var head indexHeader
+	if err := r.dec.Decode(&head); err != nil || head.Version < 1 {
+		r.close()
+		return nil, errBadIndex
+	}
+	if head.Version > indexVersion {
+		r.close()
+		return nil, fmt.Errorf("%w: version %d is newer than this program understands", errBadIndex, head.Version)
+	}
+	return r, nil
+}
+
+// next 回傳下一筆；讀完時回傳 io.EOF。
+func (r *indexReader) next() (indexEntry, error) {
+	var e indexEntry
+	if err := r.dec.Decode(&e); err == io.EOF {
+		return e, io.EOF
+	} else if err != nil {
+		return e, fmt.Errorf("%w: %v", errBadIndex, err)
+	}
+	return e, nil
+}
+
+func (r *indexReader) close() {
+	r.zr.Close()
+	r.file.Close()
+}
+
 // scanIndex 逐筆讀索引，交給 visit；visit 回傳 false 就提早結束。
 func scanIndex(file string, visit func(indexEntry) bool) error {
-	f, err := os.Open(file)
+	r, err := openIndex(file)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	zr, err := gzip.NewReader(bufio.NewReaderSize(f, 256<<10))
-	if err != nil {
-		return fmt.Errorf("%w: %v", errBadIndex, err)
-	}
-	defer zr.Close()
-	dec := json.NewDecoder(zr)
-	var head indexHeader
-	if err := dec.Decode(&head); err != nil || head.Version < 1 {
-		return errBadIndex
-	}
-	if head.Version > indexVersion {
-		return fmt.Errorf("%w: version %d is newer than this program understands", errBadIndex, head.Version)
-	}
+	defer r.close()
 	for {
-		var e indexEntry
-		if err := dec.Decode(&e); err == io.EOF {
+		e, err := r.next()
+		if err == io.EOF {
 			return nil
-		} else if err != nil {
-			return fmt.Errorf("%w: %v", errBadIndex, err)
+		}
+		if err != nil {
+			return err
 		}
 		if !visit(e) {
 			return nil

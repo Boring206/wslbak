@@ -345,9 +345,10 @@ func cmdDoctor(opts options) int {
 		}
 		dir := filepath.Join(dc.Dest, name)
 		backups := listBackups(dir)
-		// 下一份備份大概多大：用最新一份的大小估。
+		// 下一份備份大概多大：用最新一份完整備份的大小估。差異備份小得多，但下一次也可能輪到完整的，
+		// 試還原也是把整個 distro 匯入一次。
 		var nextArchive, nextRestore uint64
-		if m := newest(backups, false); m != nil {
+		if m := newestFull(backups); m != nil {
 			nextArchive = uint64(m.Size) + uint64(m.Size)/5
 			if m.Index != nil {
 				nextRestore = verifySpaceNeeded(m.Index.Size)

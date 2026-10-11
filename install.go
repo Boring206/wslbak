@@ -691,6 +691,7 @@ func cmdInit(opts options) int {
 	}
 	logf("init: distros=%v dest=%s at=%s task=%s", names, dest, at, taskName(sid))
 	fmt.Println(green(fmt.Sprintf(T.InitDone, at)))
+	fmt.Println(dim(T.InitDiffHint))
 
 	if opts.yes {
 		fmt.Println(T.InitRunHint)

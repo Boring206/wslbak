@@ -93,20 +93,66 @@ func reasonText(reason string) string {
 		return T.ReasonUser
 	case reasonSamples:
 		return T.ReasonSamples
+	case reasonBase:
+		return T.ReasonBase
 	}
 	return T.ReasonCheck
 }
 
+// whyText 把「這次為什麼做完整備份」的原因代碼換成給使用者看的說明。
+func whyText(why string) string {
+	switch why {
+	case whyAsked:
+		return T.WhyAsked
+	case whyFirst:
+		return T.WhyFirst
+	case whyBaseUnverified:
+		return T.WhyBaseUnverified
+	case whyBaseDamaged:
+		return T.WhyBaseDamaged
+	case whySettings:
+		return T.WhySettings
+	case whyAge:
+		return T.WhyAge
+	case whySize:
+		return T.WhySize
+	case whyFailed:
+		return T.WhyFailed
+	case whyClock:
+		return T.WhyClock
+	case whyFilesystem:
+		return T.WhyFilesystem
+	case whyAlias:
+		return T.WhyAlias
+	case whyListing:
+		return T.WhyListing
+	case whyMoved:
+		return T.WhyMoved
+	}
+	return T.WhyStructure
+}
+
 func verifyLabel(m *manifest) string {
 	switch {
+	case m.orphan():
+		return T.LabelOrphan
 	case m.Verify == nil:
 		return T.LabelNotVerified
+	case m.Verify.OK && m.Verify.Mode == verifyModeCheck:
+		return T.LabelChecked
 	case m.Verify.OK:
 		return T.LabelVerified
 	case m.Verify.Mode == verifyModeSkipped:
 		return T.LabelNotVerified
 	}
 	return T.LabelVerifyFailed
+}
+
+func kindLabel(m *manifest) string {
+	if m.isDiff() {
+		return T.KindDiff
+	}
+	return T.KindFull
 }
 
 // configuredTargets 回傳這次要處理的 distro 名稱：指定了 -d 就只有那一個，否則是所有啟用的。
@@ -205,14 +251,35 @@ func runOne(opts options, cfg *config, name string, distros []regDistro, wsl str
 		return giveUp(fmt.Sprintf(T.DistroNotEligible, name, reason))
 	}
 	doVerify := cfg.Verify == verifyRestore && !opts.noVerify
+	bar := &progressLine{label: T.ProgressReading}
+	req := backupRequest{
+		Distro: *d, Dir: dir, Excludes: dc.excludes(), WSL: wsl, Scheduled: opts.scheduled, OnProgress: bar.update,
+		Mode: dc.Mode, FullEvery: dc.fullEvery(), ForceFull: opts.full, Verify: cfg.Verify,
+		OnStage: func(stage string) {
+			if stage == stageListing {
+				bar.say(T.ProgressListing)
+			}
+		},
+	}
 
 	if opts.dryRun {
 		fmt.Printf(T.RunBackingUp+"\n", bold(name), dir)
+		next := &manifest{ID: time.Now().UTC().Format(idLayout), Verify: &verifyResult{OK: doVerify}}
+		existing := listBackups(dir)
+		if dc.Mode == modeDiff {
+			// 只看這邊已經知道的事；distro 裡的情況要真的去看才知道，到時仍然可能改做完整備份。
+			if base, why := chooseKind(req.kindQuery(existing)); base != nil {
+				next.Kind, next.Base, next.base = kindDiff, base.ID, base
+				fmt.Println("  " + fmt.Sprintf(T.DryRunWouldDiff, base.ID))
+			} else {
+				fmt.Println("  " + fmt.Sprintf(T.DryRunWouldFull, whyText(why)))
+			}
+		}
 		if doVerify {
 			fmt.Println("  " + T.DryRunWouldVerify)
 		}
 		// 這次備份如果通過試還原，會擠掉哪些舊的。
-		planned := append(listBackups(dir), &manifest{ID: time.Now().UTC().Format(idLayout), Verify: &verifyResult{OK: doVerify}})
+		planned := append(existing, next)
 		for _, m := range planRetention(planned, dc.retention(), cfg.Verify) {
 			fmt.Printf("  "+T.DryRunWouldPrune+"\n", m.ID)
 		}
@@ -223,16 +290,21 @@ func runOne(opts options, cfg *config, name string, distros []regDistro, wsl str
 	st.LastAttempt = time.Now()
 	saveState(state)
 	fmt.Printf(T.RunBackingUp+"\n", bold(name), dir)
-	bar := &progressLine{label: T.ProgressReading}
-	m, err := runBackup(backupRequest{
-		Distro: *d, Dir: dir, Excludes: dc.excludes(), WSL: wsl, Scheduled: opts.scheduled, OnProgress: bar.update,
-	})
+	m, why, err := runBackup(req)
 	bar.clear()
 	if err != nil {
 		logf("%s: backup failed: %v", name, err)
 		return giveUpWith(backupErrorText(err), backupErrorBrief(err)+T.BriefSeeLog)
 	}
-	fmt.Printf("  "+T.RunWritten+"\n", m.Archive, humanBytes(m.Size), humanDuration(time.Duration(m.Seconds*float64(time.Second))))
+	if why != "" {
+		fmt.Println("  " + dim(fmt.Sprintf(T.RunFullBecause, whyText(why))))
+	}
+	took := humanDuration(time.Duration(m.Seconds * float64(time.Second)))
+	if m.isDiff() {
+		fmt.Printf("  "+T.RunWrittenDiff+"\n", m.Archive, humanBytes(m.Size), took, m.Base)
+	} else {
+		fmt.Printf("  "+T.RunWritten+"\n", m.Archive, humanBytes(m.Size), took)
+	}
 	if m.WarningCount > 0 {
 		fmt.Println("  " + dim(fmt.Sprintf(T.RunWarnings, m.WarningCount)))
 	}
@@ -253,16 +325,30 @@ func runOne(opts options, cfg *config, name string, distros []regDistro, wsl str
 		result = resultUnverified
 		fmt.Println("  " + dim(T.RunVerifySkipped))
 	case doVerify:
-		fmt.Println(T.RunVerifying)
-		bar := &progressLine{label: T.ProgressImporting}
-		res := runVerify(m, bar.update)
-		bar.clear()
+		// 完整備份每次都試還原；差異大多只做輕量檢查，定期才把它和完整備份合起來試還原。
+		var res *verifyResult
+		light := chooseVerify(m, listBackups(dir), time.Now()) == verifyModeCheck
+		if light {
+			fmt.Println(T.RunChecking)
+			res = runCheck(m)
+		} else {
+			fmt.Println(T.RunVerifying)
+			bar := &progressLine{label: T.ProgressImporting}
+			res = runVerify(m, bar.update)
+			bar.clear()
+		}
+		spent := humanDuration(time.Duration(res.Seconds * float64(time.Second)))
 		switch {
+		case res.OK && light:
+			fmt.Println("  " + green(fmt.Sprintf(T.RunChecked, spent, int(mergedVerifyEvery/(24*time.Hour)))))
 		case res.OK:
-			fmt.Println("  " + green(fmt.Sprintf(T.RunVerified, res.Samples, humanDuration(time.Duration(res.Seconds*float64(time.Second))))))
+			fmt.Println("  " + green(fmt.Sprintf(T.RunVerified, res.Samples, spent)))
 		case res.Mode == verifyModeSkipped:
 			code, result, message = 1, resultUnverified, fmt.Sprintf(T.RunNotVerified, reasonText(res.Reason))
 			fmt.Println("  " + yellow(message))
+		case light:
+			code, result, message = 2, resultFailed, fmt.Sprintf(T.RunCheckFailed, reasonText(res.Reason))
+			fmt.Println("  " + red(message))
 		default:
 			code, result, message = 2, resultFailed, fmt.Sprintf(T.RunVerifyFailed, reasonText(res.Reason))
 			fmt.Println("  " + red(message))
@@ -291,7 +377,11 @@ func runOne(opts options, cfg *config, name string, distros []regDistro, wsl str
 	case result == resultUnverified && message != "":
 		notify(cfg, fmt.Sprintf(T.NotifyUnverifiedTitle, name), message)
 	case result == resultOK && cfg.Notify.On == notifyAlways:
-		notify(cfg, fmt.Sprintf(T.NotifyOKTitle, name), fmt.Sprintf(T.NotifyOKBody, m.ID, humanBytes(m.Size)))
+		body := T.NotifyOKBody
+		if m.Verify != nil && m.Verify.Mode == verifyModeCheck {
+			body = T.NotifyOKChecked
+		}
+		notify(cfg, fmt.Sprintf(T.NotifyOKTitle, name), fmt.Sprintf(body, m.ID, humanBytes(m.Size)))
 	}
 	if code == 0 {
 		fmt.Println(green(T.RunDone))
@@ -315,7 +405,7 @@ func cmdVerify(opts options) int {
 	}
 	var m *manifest
 	if opts.id != "" {
-		if m = readManifest(source.Dir, opts.id); m == nil {
+		if m = findBackup(source.Dir, opts.id); m == nil {
 			return fail(fmt.Errorf(T.NoSuchBackup, opts.id))
 		}
 	} else if m = newest(listBackups(source.Dir), false); m == nil {
@@ -365,7 +455,7 @@ func cmdList(opts options) int {
 		rows := [][]string{T.ListHeaders[:]}
 		for i := len(backups) - 1; i >= 0; i-- {
 			m := backups[i]
-			rows = append(rows, []string{m.ID, m.Created.Local().Format("2006-01-02 15:04"), humanBytes(m.Size), verifyLabel(m)})
+			rows = append(rows, []string{m.ID, m.Created.Local().Format("2006-01-02 15:04"), kindLabel(m), humanBytes(m.Size), verifyLabel(m)})
 		}
 		printTable(rows)
 	}

@@ -339,9 +339,10 @@ func memberKey(name string) string {
 	return strings.TrimPrefix(path.Clean("/"+name), "/")
 }
 
-// scanOverride 掃描送去匯入的 tar 串流；tailStart 是我們接上去的那一段在串流裡開始的位置。
+// scanOverride 掃描送去匯入的 tar 串流；tailStart 回傳我們接上去的那一段在串流裡開始的位置
+// （合併出來的串流要到前面都寫完才知道，還不知道時回傳 -1）。
 // 試還原送出資料的同時用它確認覆寫確實生效，確認不過就不啟動那個暫時 distro。
-func scanOverride(r io.Reader, tailStart int64) (overrideCheck, error) {
+func scanOverride(r io.Reader, tailStart func() int64) (overrideCheck, error) {
 	var c overrideCheck
 	counted := &progressReader{r: r}
 	tr := tar.NewReader(counted)
@@ -354,7 +355,8 @@ func scanOverride(r io.Reader, tailStart int64) (overrideCheck, error) {
 			return overrideCheck{}, err
 		}
 		// 標頭剛讀完，讀到的位置在它的結尾；標頭本身佔一個區塊。
-		ours := counted.n.Load()-tarBlock >= tailStart
+		start := tailStart()
+		ours := start >= 0 && counted.n.Load()-tarBlock >= start
 		switch memberKey(h.Name) {
 		case "etc":
 			c.etcIsDir = h.Typeflag == tar.TypeDir

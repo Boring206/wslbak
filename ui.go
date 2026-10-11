@@ -239,6 +239,15 @@ func (p *progressLine) update(n int64) {
 	p.shown = true
 }
 
+// say 在同一行上顯示一句話，給沒有數字可報的步驟用。
+func (p *progressLine) say(text string) {
+	if !useColor {
+		return
+	}
+	fmt.Printf("\r\x1b[2K  %s ", text)
+	p.shown = true
+}
+
 func (p *progressLine) clear() {
 	if p.shown {
 		fmt.Print("\r\x1b[2K")

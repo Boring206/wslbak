@@ -1,19 +1,18 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
-
-	"github.com/klauspost/compress/gzip"
 )
 
 // 試還原：把剛寫好的封存真的匯入成一個暫時的 distro，在裡面檢查，然後移除。
@@ -33,6 +32,7 @@ const (
 	reasonCheck     = "check"      // 檢查腳本沒有跑完
 	reasonUser      = "user"       // 預設使用者或家目錄不見了
 	reasonSamples   = "samples"    // 檔案內容和備份時記下的不一樣
+	reasonBase      = "base"       // 差異所依據的完整備份不在了，或不是當初那一份
 	importTimeout   = 12 * time.Hour
 	checkTimeout    = 15 * time.Minute
 	verifySpaceSlop = 1 << 30
@@ -129,25 +129,178 @@ func judgeCheck(r checkReport, samples, sizes int) (reason, detail string) {
 	return "", ""
 }
 
+// verifySource 是送去匯入的那條 tar，以及匯入之後才能下的結論。
+type verifySource struct {
+	// stream 是整個 distro 的 tar，結尾接著覆寫用的項目。
+	stream io.Reader
+	// tailStart 回傳我們接上去的那一段從串流的哪裡開始；還不知道時是 -1。
+	tailStart func() int64
+	// settle 在匯入結束後呼叫（failed 表示匯入沒成功）：封存有問題時回傳原因，沒問題回傳空字串。
+	settle func(failed bool) (reason, detail string)
+	close  func()
+	// samples 與 largest 是匯入後要比對的檔案，settle 之後才齊全。
+	samples []fileSample
+	largest []fileSize
+}
+
+// fullSource：完整備份的封存原封不動，只在結尾接上覆寫用的項目。
+func fullSource(m *manifest) (*verifySource, error) {
+	a, err := openArchive(m.archivePath())
+	if err != nil {
+		return nil, err
+	}
+	src := &verifySource{close: a.Close, samples: m.Index.Samples, largest: m.Index.Largest}
+	src.stream = newOverrideReader(a, m.Index.EndOffset, buildOverrideTail())
+	src.tailStart = func() int64 { return m.Index.EndOffset }
+	src.settle = func(bool) (string, string) {
+		// 不管匯入成不成功，都把檔案剩下的部分算進雜湊：封存本身有問題的話，那比「匯入失敗」更接近原因。
+		if _, err := io.Copy(io.Discard, a.hashed); err != nil {
+			return reasonUnread, err.Error()
+		}
+		if got := hex.EncodeToString(a.sum.Sum(nil)); got != m.SHA256 {
+			return reasonChanged, "sha256 is " + got
+		}
+		return "", ""
+	}
+	return src, nil
+}
+
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// mergedSource：差異的還原點要把完整備份與差異合併起來，再接上覆寫用的項目。
+func mergedSource(m *manifest) *verifySource {
+	pr, pw := io.Pipe()
+	var start atomic.Int64
+	start.Store(-1)
+	// 完整備份當時抽樣的檔案，只有還留在這個還原點裡的才能拿來比對。
+	interesting := map[string]bool{}
+	for _, s := range m.base.Index.Samples {
+		interesting[s.Path] = true
+	}
+	for _, f := range m.base.Index.Largest {
+		interesting[f.Path] = true
+	}
+	kept := map[string]bool{}
+	done := make(chan error, 1)
+	go func() {
+		out := &countingWriter{w: pw}
+		err := writeMerged(m, out, mergeOptions{OnBase: func(name string, dropped bool) {
+			if !dropped && interesting[name] {
+				kept[name] = true
+			}
+		}})
+		if err == nil {
+			// 兩個封存都讀完、雜湊也對了，才接上結尾；少了結尾的串流不會被當成完整的。
+			start.Store(out.n)
+			_, err = pw.Write(buildOverrideTail())
+		}
+		pw.CloseWithError(err)
+		done <- err
+	}()
+	src := &verifySource{stream: pr, tailStart: start.Load, close: func() { pr.Close() }}
+	src.settle = func(failed bool) (string, string) {
+		// 匯入先結束的話，讓還在寫的那一端跟著停下來。
+		pr.CloseWithError(io.ErrClosedPipe)
+		err := <-done
+		var changed *errArchiveChanged
+		switch {
+		case err == nil:
+			src.samples = append([]fileSample{}, m.Index.Samples...)
+			for _, s := range m.base.Index.Samples {
+				if kept[s.Path] {
+					src.samples = append(src.samples, s)
+				}
+			}
+			src.largest = append([]fileSize{}, m.Index.Largest...)
+			for _, f := range m.base.Index.Largest {
+				if kept[f.Path] {
+					src.largest = append(src.largest, f)
+				}
+			}
+			return "", ""
+		case errors.As(err, &changed):
+			return reasonChanged, err.Error()
+		case errors.Is(err, errMergeMismatch):
+			return reasonBase, err.Error()
+		case !failed:
+			return reasonUnread, err.Error()
+		}
+		// 匯入先失敗了，合併是被我們打斷的：看看是不是哪個封存本身已經不對。
+		for _, part := range []*manifest{m.base, m} {
+			sum, err := fileSHA256(part.archivePath())
+			if err != nil {
+				return reasonUnread, err.Error()
+			}
+			if sum != part.SHA256 {
+				return reasonChanged, part.Archive + ": sha256 is " + sum
+			}
+		}
+		return "", ""
+	}
+	return src
+}
+
+// recordVerify 把驗證的結果寫回 manifest。
+func recordVerify(m *manifest, res *verifyResult, began time.Time, reason, detail string) *verifyResult {
+	res.Reason, res.Detail, res.OK = reason, detail, reason == ""
+	if skippedReason(reason) {
+		res.Mode = verifyModeSkipped
+	}
+	res.Seconds = time.Since(began).Seconds()
+	m.Verify = res
+	if err := m.save(); err != nil {
+		logf("verify %s: cannot save the manifest: %v", m.ID, err)
+	}
+	logf("verify %s: ok=%v mode=%s reason=%q detail=%q %.0fs", m.ID, res.OK, res.Mode, reason, detail, res.Seconds)
+	return res
+}
+
+// runCheck 是差異備份的輕量檢查：不匯入，只確認「之後要還原時，需要的東西都在而且沒變」。
+// 差異本身從頭讀一遍（解得開、走得完、項目數與雜湊都對），它的完整備份還在、大小沒變，
+// 「哪些項目不要了」的清單完好。完整備份的內容不在這裡重讀：那要把整份再讀一次，留給定期的合併試還原。
+func runCheck(m *manifest) *verifyResult {
+	began := time.Now()
+	res := &verifyResult{At: began.UTC(), Mode: verifyModeCheck}
+	finish := func(reason, detail string) *verifyResult { return recordVerify(m, res, began, reason, detail) }
+	if !m.isDiff() || m.orphan() {
+		return finish(reasonBase, "")
+	}
+	if info, err := os.Stat(m.base.archivePath()); err != nil || info.Size() != m.base.Size {
+		return finish(reasonBase, "the archive of the full backup is missing or has another size")
+	}
+	drop, err := unpackBits(m.Drop)
+	if err != nil || int64(len(drop))*8 < m.BaseEntries || countBits(drop) != m.DropCount {
+		return finish(reasonChanged, "the list of dropped entries is damaged")
+	}
+	if reason, detail := checkArchive(m); reason != "" {
+		return finish(reason, detail)
+	}
+	if m.Index != nil {
+		res.Samples = len(m.Index.Samples)
+	}
+	return finish("", "")
+}
+
 // runVerify 對一份備份做試還原，並把結果寫回它的 manifest。
+// 差異的還原點是把它和它的完整備份合併之後匯入：試的正是之後還原時會走的那條路。
 func runVerify(m *manifest, onProgress func(tarBytes int64)) *verifyResult {
 	began := time.Now()
 	res := &verifyResult{At: began.UTC(), Mode: verifyModeRestore}
-	finish := func(reason, detail string) *verifyResult {
-		res.Reason, res.Detail, res.OK = reason, detail, reason == ""
-		if skippedReason(reason) {
-			res.Mode = verifyModeSkipped
-		}
-		res.Seconds = time.Since(began).Seconds()
-		m.Verify = res
-		if err := m.save(); err != nil {
-			logf("verify %s: cannot save the manifest: %v", m.ID, err)
-		}
-		logf("verify %s: ok=%v mode=%s reason=%q detail=%q %.0fs", m.ID, res.OK, res.Mode, reason, detail, res.Seconds)
-		return res
-	}
+	finish := func(reason, detail string) *verifyResult { return recordVerify(m, res, began, reason, detail) }
 
-	if m.Index == nil {
+	if m.orphan() {
+		return finish(reasonBase, "")
+	}
+	if m.Index == nil || (m.isDiff() && m.base.Index == nil) {
 		return finish(reasonNoIndex, "")
 	}
 	if !m.Index.EtcIsDir {
@@ -162,7 +315,7 @@ func runVerify(m *manifest, onProgress func(tarBytes int64)) *verifyResult {
 	}
 	sweepStale(root)
 	if vol, err := volumeOf(root); err == nil {
-		if need := verifySpaceNeeded(m.Index.Size); vol.Free < need {
+		if need := verifySpaceNeeded(m.tarSize()); vol.Free < need {
 			return finish(reasonNoSpace, fmt.Sprintf("%d bytes free on %s, %d needed", vol.Free, vol.Root, need))
 		}
 	}
@@ -185,21 +338,14 @@ func runVerify(m *manifest, onProgress func(tarBytes int64)) *verifyResult {
 	}()
 
 	// 讀檔 → 算整個檔案的雜湊 → 解壓 → 接上覆寫項目 → 一份送去匯入，一份送去確認覆寫確實在最後面。
-	file, err := os.Open(m.archivePath())
-	if err != nil {
+	var src *verifySource
+	if m.isDiff() {
+		src = mergedSource(m)
+	} else if src, err = fullSource(m); err != nil {
 		return finish(reasonUnread, err.Error())
 	}
-	defer file.Close()
-	sum := sha256.New()
-	hashed := io.TeeReader(bufio.NewReaderSize(file, 1<<20), sum)
-	// 解壓用單執行緒的版本：它不會在背景預讀，雜湊算到哪裡完全由我們讀到哪裡決定。
-	zr, err := gzip.NewReader(hashed)
-	if err != nil {
-		return finish(reasonUnread, err.Error())
-	}
-	defer zr.Close()
-	overridden := newOverrideReader(zr, m.Index.EndOffset, buildOverrideTail())
-	sent := &progressReader{r: overridden}
+	defer src.close()
+	sent := &progressReader{r: src.stream}
 
 	gateR, gateW := io.Pipe()
 	type gateResult struct {
@@ -208,7 +354,7 @@ func runVerify(m *manifest, onProgress func(tarBytes int64)) *verifyResult {
 	}
 	gate := make(chan gateResult, 1)
 	go func() {
-		check, err := scanOverride(gateR, m.Index.EndOffset)
+		check, err := scanOverride(gateR, src.tailStart)
 		// 不管結果如何都把剩下的讀完，免得寫的那一端卡住。
 		io.Copy(io.Discard, gateR)
 		gate <- gateResult{check, err}
@@ -241,22 +387,12 @@ func runVerify(m *manifest, onProgress func(tarBytes int64)) *verifyResult {
 	gateW.Close()
 	gated := <-gate
 
+	// 先看是不是封存本身的問題：那比「匯入失敗」更接近原因。
+	if reason, detail := src.settle(importErr != nil); reason != "" {
+		return finish(reason, detail)
+	}
 	if importErr != nil {
-		// 先看是不是封存本身的問題：那比「匯入失敗」更接近原因。
-		if _, err := io.Copy(io.Discard, hashed); err != nil {
-			return finish(reasonUnread, err.Error())
-		}
-		if got := hex.EncodeToString(sum.Sum(nil)); got != m.SHA256 {
-			return finish(reasonChanged, "sha256 is "+got)
-		}
 		return finish(reasonImport, importErr.Error())
-	}
-	// gzip 的結尾之後不該還有東西；把檔案剩下的部分也算進雜湊。
-	if _, err := io.Copy(io.Discard, hashed); err != nil {
-		return finish(reasonUnread, err.Error())
-	}
-	if got := hex.EncodeToString(sum.Sum(nil)); got != m.SHA256 {
-		return finish(reasonChanged, "sha256 is "+got)
 	}
 	// 到這裡之前，暫時 distro 只是被匯入，還沒有啟動過。覆寫沒有確認生效就不啟動它。
 	if gated.err != nil || !gated.check.inert() {
@@ -264,7 +400,7 @@ func runVerify(m *manifest, onProgress func(tarBytes int64)) *verifyResult {
 	}
 
 	var list strings.Builder
-	for _, s := range m.Index.Samples {
+	for _, s := range src.samples {
 		list.WriteString(s.SHA256 + "  " + s.Path + "\n")
 	}
 	uid := ""
@@ -272,7 +408,7 @@ func runVerify(m *manifest, onProgress func(tarBytes int64)) *verifyResult {
 		uid = strconv.FormatUint(uint64(m.DefaultUID), 10)
 	}
 	var sizes strings.Builder
-	for _, f := range m.Index.Largest {
+	for _, f := range src.largest {
 		sizes.WriteString(strconv.FormatInt(f.Size, 10) + "\t" + f.Path + "\n")
 	}
 	out, err := runInDistro(name, withVars(checkScript,
@@ -282,7 +418,7 @@ func runVerify(m *manifest, onProgress func(tarBytes int64)) *verifyResult {
 	), checkTimeout)
 	report := parseCheck(decodeWSLText(out))
 	res.Samples = report.SamplesOK
-	if reason, detail := judgeCheck(report, len(m.Index.Samples), len(m.Index.Largest)); reason != "" {
+	if reason, detail := judgeCheck(report, len(src.samples), len(src.largest)); reason != "" {
 		if err != nil {
 			detail += " (" + err.Error() + ": " + firstLine(decodeWSLText(out)) + ")"
 		}

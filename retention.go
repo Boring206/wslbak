@@ -12,7 +12,9 @@ const maxUnverified = 2
 
 // retention 是保留規則：最新的 Last 份一定留；在那之外，每週、每月各再留最新的一份，
 // 分別留 Weekly 週與 Monthly 個月。每週與每月的規則不會讓備份變小，它們的用處是
-// 用差不多的份數涵蓋更長的時間。
+// 用差不多的份數涵蓋更長的時間。（讓備份變小的是差異備份，見 diff.go。）
+//
+// 每一份備份，不管是完整還是差異，都是一個還原點，都照這套規則算。
 type retention struct {
 	Last, Weekly, Monthly int
 }
@@ -38,6 +40,9 @@ func backupTime(m *manifest) time.Time {
 //
 // 每週、每月的算法：由新到舊看過去，每遇到一個還沒留過的週（或月）就留下那一週最新的一份，
 // 留滿指定的週數（或月數）為止。沒有備份的週不佔名額。
+//
+// 差異備份要和它的完整備份合起來才還原得出東西，所以只要還有一份被留下的差異依據著某份完整備份，
+// 那份完整備份就一定留下，不管它自己排在第幾。反過來，完整備份不見了的差異不算好的備份。
 func planRetention(backups []*manifest, pol retention, verify string) []*manifest {
 	if pol.Last < 1 {
 		pol.Last = 1
@@ -49,7 +54,7 @@ func planRetention(backups []*manifest, pol retention, verify string) []*manifes
 	weeks, months := map[string]bool{}, map[string]bool{}
 	good, bad := 0, 0
 	for _, m := range sorted {
-		if verify == verifyRestore && !m.verified() {
+		if m.orphan() || (verify == verifyRestore && !m.verified()) {
 			if bad++; bad <= maxUnverified {
 				keep[m] = true
 			}
@@ -67,6 +72,11 @@ func planRetention(backups []*manifest, pol retention, verify string) []*manifes
 		if mo := t.Format("2006-01"); !months[mo] && len(months) < pol.Monthly {
 			months[mo] = true
 			keep[m] = true
+		}
+	}
+	for _, m := range sorted {
+		if keep[m] && m.isDiff() && m.base != nil {
+			keep[m.base] = true
 		}
 	}
 	var doomed []*manifest
@@ -91,8 +101,9 @@ func applyPrune(doomed []*manifest) (removed int) {
 		if err := os.Remove(m.path()); err != nil {
 			logf("prune %s: %v", m.ID, err)
 		}
-		// 檔案索引是附屬的檔案，有就一起刪。
+		// 檔案索引與目錄清單是附屬的檔案，有就一起刪。
 		os.Remove(m.indexPath())
+		os.Remove(m.dirsPath())
 		removed++
 		logf("pruned %s", m.ID)
 	}
