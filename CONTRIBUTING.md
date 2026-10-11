@@ -65,6 +65,7 @@ Before sending a change, please also run what the `lint` job runs: `gofmt -l .`,
 
 ## Reporting a bug
 
-Please include the output of `wslbak doctor`, the version (`wslbak --version`), and the relevant
-lines of `%LOCALAPPDATA%\wslbak\wslbak.log`. For anything that might be a security problem, see
-`SECURITY.md` instead of opening a public issue.
+Open an issue at <https://github.com/Boring206/wslbak/issues>. Please include the output of
+`wslbak doctor`, the version (`wslbak --version`), and the relevant lines of
+`%LOCALAPPDATA%\wslbak\wslbak.log`. For anything that might be a security problem, see
+[SECURITY.md](SECURITY.md) instead of opening a public issue.

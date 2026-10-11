@@ -22,7 +22,11 @@ What a release relies on, for checking it or for doing it again after a move.
 2. `npm test`, `npm run e2e`, and start the `e2e` workflow on GitHub.
 3. Commit, then tag and push the tag: `git tag v0.1.1 && git push origin v0.1.1`.
    The `release` workflow tests, builds, creates the GitHub Release with the zips, `SHA256SUMS`
-   and `package-manifests.zip`, and publishes to npm.
+   and `package-manifests.zip`, and publishes to npm. Before it publishes it marks the executables
+   as executable and checks that npm packs them so (`scripts/pack-check.mjs`): they come from a
+   Windows runner through an artifact, which does not keep file modes. Publishing by hand has to
+   be done from Linux or WSL for the same reason, after running that script.
+   To try the workflow without publishing anything, start it by hand: `gh workflow run release`.
 4. **scoop**: the bucket's workflow copies the manifest from the newest release once a day. To have
    it at once: `gh workflow run bucket -R Boring206/scoop-bucket`. GitHub switches a daily workflow
    off after 60 days without a commit in its repository; `gh workflow enable bucket -R Boring206/scoop-bucket`

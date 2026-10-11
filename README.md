@@ -502,7 +502,7 @@ the last 20 hours.
   has run there three more times and passed each time. The arm64 executables
   start and pass the unit tests on arm64 Windows, where no WSL was available to back up. Not tried
   yet: Windows 10 itself, a PC with Docker Desktop, and distros of 100 GB or more; reports are
-  welcome.
+  welcome, as [issues](https://github.com/Boring206/wslbak/issues).
 
 ## Troubleshooting
 
@@ -539,6 +539,15 @@ Start with `wslbak doctor`.
   rewrites arguments that look like Linux paths (`/home/me` becomes `C:/Program Files/Git/home/me`)
   before wslbak sees them; wslbak notices and says so. Put `MSYS_NO_PATHCONV=1` in front of the
   command, or use PowerShell, cmd or a WSL shell.
+
+## Questions and problems
+
+Found a bug, or something this page does not explain? Open an issue at
+<https://github.com/Boring206/wslbak/issues>. It helps most to include the output of
+`wslbak doctor`, the version (`wslbak --version`) and the relevant lines of
+`%LOCALAPPDATA%\wslbak\wslbak.log`. For anything that may be a security problem, please use the
+private form that [SECURITY.md](https://github.com/Boring206/wslbak/blob/main/SECURITY.md)
+describes, not a public issue.
 
 ## Development
 

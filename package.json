@@ -13,7 +13,9 @@
     "cli"
   ],
   "homepage": "https://github.com/Boring206/wslbak#readme",
-  "bugs": "https://github.com/Boring206/wslbak/issues",
+  "bugs": {
+    "url": "https://github.com/Boring206/wslbak/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Boring206/wslbak.git"

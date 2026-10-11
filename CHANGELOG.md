@@ -49,6 +49,11 @@ never published.
 - When a WSL command can neither finish nor be ended (which can happen when WSL as a whole stops
   answering), wslbak stops waiting about half a minute after the command's time limit and reports
   the failure, instead of waiting for ever.
+- The executables in the npm package are marked executable again. In 0.1.1 they were not; inside
+  WSL the launcher then sets the mode itself on every run, which it cannot do when the package was
+  installed with `sudo`, so it stopped and asked for a `chmod` by hand.
+- The README says where to report a problem, with a link, and `package.json` gives the bug tracker
+  in the form that package scanners recognise.
 - The tour at the top of the README was recorded again with this version, and now shows a
   differential backup as well.
 - The README says what was seen with Avast's sandbox (a second, isolated copy of the program that

@@ -408,7 +408,8 @@ wslbak 把真正的大小也寫進那個標頭（標頭的檢查碼跟著更正�
   其中 2 次凍結時 wslbak 還沒開始執行。凍結歸因於那些機器，不是 wslbak：另外 54 台同一種機器只安裝 WSL、上面沒有 wslbak，
   也有 1 台凍結；而 108 台只打開 Defender、沒有用到 WSL 的機器全部正常。0.2.0 又在那裡跑了三次整套測試，三次都通過。
   arm64 的執行檔在 arm64 Windows 上能啟動、單元測試通過，但那裡沒有 WSL 可以備份。
-  還沒試過的：Windows 10 本身、裝有 Docker Desktop 的電腦、100 GB 以上的 distro，歡迎回報。
+  還沒試過的：Windows 10 本身、裝有 Docker Desktop 的電腦、100 GB 以上的 distro，歡迎到
+  [Issues](https://github.com/Boring206/wslbak/issues) 回報。
 
 ## 疑難排解
 
@@ -442,6 +443,13 @@ wslbak 把真正的大小也寫進那個標頭（標頭的檢查碼跟著更正�
 - **在 Git Bash 裡，`--path`、`--into` 與 `files <路徑>` 會被當成 Windows 路徑而拒絕。** Git Bash 會把看起來像
   Linux 路徑的參數改寫掉（`/home/me` 變成 `C:/Program Files/Git/home/me`），wslbak 收到的已經是改過的；
   它會發現並告訴你。在指令前面加上 `MSYS_NO_PATHCONV=1`，或改用 PowerShell、cmd 或 WSL 的 shell。
+
+## 問題與回報
+
+遇到錯誤，或這一頁沒有說清楚的地方，請到 <https://github.com/Boring206/wslbak/issues> 開一個 issue。
+附上 `wslbak doctor` 的輸出、版本（`wslbak --version`）以及 `%LOCALAPPDATA%\wslbak\wslbak.log` 裡相關的幾行，最有幫助。
+可能是安全性問題的，請照 [SECURITY.md](https://github.com/Boring206/wslbak/blob/main/SECURITY.md)（英文）
+說的方式私下回報，不要開公開的 issue。
 
 ## 開發
 
