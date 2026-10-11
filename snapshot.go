@@ -39,6 +39,7 @@ const (
 	seenInDiff  = 1 << iota // 這一趟差異的 tar 收了它
 	keptInBase              // 它留在完整備份裡，原樣沿用
 	isSocketBit             // tar 說它是 socket
+	goneBit                 // 這一趟差異的 tar 走到它時，它已經不見了
 )
 
 var errBadSnapshot = errors.New("not a usable tar snapshot")
@@ -361,6 +362,22 @@ func unquoteTarName(s string) (string, bool) {
 		}
 	}
 	return b.String(), true
+}
+
+// noteGone 記下 tar 在打包途中發現已經不見的一個名稱（清單之後才被刪掉或改名的）。
+// 不見的是目錄的話，它底下的東西也跟著沒了。
+func (l *listing) noteGone(quoted string) {
+	name, ok := unquoteTarName(quoted)
+	if !ok {
+		return
+	}
+	name = cleanMember(name)
+	if dir := l.dirs[name]; dir != nil {
+		dir.inDiff = false
+	}
+	if dir, i := l.lookup(name); dir != nil && i >= 0 {
+		dir.state[i] |= goneBit
+	}
 }
 
 // noteSocket 把 tar 回報的一個 socket 記到清單上；清單裡找不到那個名稱時回傳 false。

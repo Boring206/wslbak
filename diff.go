@@ -75,7 +75,7 @@ type clockInfo struct {
 // 檔案上的時間是 distro 的時鐘寫的；它在電腦睡眠後常常落後，那沒有關係（落後的時鐘照樣只往前走）。
 // 要防的是它「超前」之後又被校正回來：那之後改過的檔案，時間會比超前時記下的基準還早。
 func sinceFor(c clockInfo) int64 {
-	return min(c.Distro, c.Windows) - int64(sinceMargin/time.Second)
+	return min(c.Distro, c.Windows) - currentSinceMargin()
 }
 
 // mountRow 是 /proc/self/mountinfo 的一行裡我們要的欄位。
@@ -320,29 +320,45 @@ type dirsHeader struct {
 	ID      string `json:"id"`
 }
 
+// dirRecord 是 dirs.gz 裡的一筆。沒有名稱的紀錄只說「完整備份當時有一個目錄是這個 inode」：
+// 那個目錄在備份途中被換過或搬過，不能拿來認路徑，但之後看到這個 inode 時要知道它不是新建的。
 type dirRecord struct {
 	Path  string `json:"p,omitempty"`
 	PathB string `json:"pb,omitempty"` // 名稱不是合法的 UTF-8 時：原始位元組的 base64
 	Ino   uint64 `json:"i"`
-	CTime int64  `json:"c"`
+	CTime int64  `json:"c,omitempty"`
 }
 
 // stableDirs 挑出可以當作身分的目錄：打包前、後兩次清單裡 inode 相同的那些，配上打包時看到的變更時間。
 // 只在一次清單裡出現、或兩次 inode 不同的目錄，是在備份途中被建立、刪除或換掉的；封存裡存的
-// 是哪一個說不準，所以不記。之後的差異遇到沒有紀錄的目錄，會把它當成「不是原來那個」。
-func stableDirs(before, after *listing, dumped map[string]int64) map[string]dirIdentity {
-	out := make(map[string]dirIdentity, len(dumped))
+// 是哪一個說不準，所以不拿它們的路徑當身分。之後的差異遇到沒有紀錄的路徑，會把那個目錄當成「不是原來那個」。
+// 那些目錄的 inode 另外回傳（others）：它們確實在完整備份當時就存在。
+func stableDirs(before, after *listing, dumped map[string]int64) (stable map[string]dirIdentity, others []uint64) {
+	stable = make(map[string]dirIdentity, len(dumped))
+	inStable := map[uint64]bool{}
 	for name, ctime := range dumped {
 		a, b := before.dirs[name], after.dirs[name]
 		if a != nil && b != nil && a.dev == b.dev && a.ino == b.ino && a.ino != 0 {
-			out[name] = dirIdentity{Ino: a.ino, CTime: ctime}
+			stable[name] = dirIdentity{Ino: a.ino, CTime: ctime}
+			inStable[a.ino] = true
 		}
 	}
-	return out
+	seen := map[uint64]bool{}
+	for _, list := range []*listing{before, after} {
+		for _, dir := range list.dirs {
+			if !inStable[dir.ino] && !seen[dir.ino] {
+				seen[dir.ino] = true
+				others = append(others, dir.ino)
+			}
+		}
+	}
+	sort.Slice(others, func(i, j int) bool { return others[i] < others[j] })
+	return stable, others
 }
 
-// writeDirs 寫出 <編號>.dirs.gz，回傳檔案的 SHA-256。
-func writeDirs(path, id string, dirs map[string]dirIdentity) (string, error) {
+// writeDirs 由打包前後的兩份清單與打包時看到的目錄，寫出 <編號>.dirs.gz，回傳檔案的 SHA-256。
+func writeDirs(path, id string, before, after *listing, dumped map[string]int64) (string, error) {
+	dirs, others := stableDirs(before, after, dumped)
 	names := make([]string, 0, len(dirs))
 	for name := range dirs {
 		names = append(names, name)
@@ -364,6 +380,12 @@ func writeDirs(path, id string, dirs map[string]dirIdentity) (string, error) {
 		}
 		err = enc.Encode(rec)
 	}
+	for _, ino := range others {
+		if err != nil {
+			break
+		}
+		err = enc.Encode(dirRecord{Ino: ino})
+	}
 	if cerr := zw.Close(); err == nil {
 		err = cerr
 	}
@@ -379,39 +401,44 @@ func writeDirs(path, id string, dirs map[string]dirIdentity) (string, error) {
 
 var errBadDirs = errors.New("the record of directories is missing or has changed")
 
-// readDirs 讀回 <編號>.dirs.gz。雜湊和 manifest 記的不一樣就不用。
-func readDirs(path, wantSHA string) (map[string]dirIdentity, error) {
+// readDirs 讀回 <編號>.dirs.gz：每個路徑上的目錄身分，以及當時存在的其他目錄的 inode。
+// 雜湊和 manifest 記的不一樣就不用。
+func readDirs(path, wantSHA string) (dirs map[string]dirIdentity, others []uint64, err error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errBadDirs, err)
+		return nil, nil, fmt.Errorf("%w: %v", errBadDirs, err)
 	}
 	if sum := sha256.Sum256(raw); wantSHA == "" || hex.EncodeToString(sum[:]) != wantSHA {
-		return nil, errBadDirs
+		return nil, nil, errBadDirs
 	}
 	zr, err := gzip.NewReader(bytes.NewReader(raw))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errBadDirs, err)
+		return nil, nil, fmt.Errorf("%w: %v", errBadDirs, err)
 	}
 	dec := json.NewDecoder(zr)
 	var head dirsHeader
 	if err := dec.Decode(&head); err != nil || head.Version != dirsVersion {
-		return nil, errBadDirs
+		return nil, nil, errBadDirs
 	}
-	dirs := map[string]dirIdentity{}
+	dirs = map[string]dirIdentity{}
 	for {
 		var rec dirRecord
 		if err := dec.Decode(&rec); err == io.EOF {
-			return dirs, nil
+			return dirs, others, nil
 		} else if err != nil {
-			return nil, fmt.Errorf("%w: %v", errBadDirs, err)
+			return nil, nil, fmt.Errorf("%w: %v", errBadDirs, err)
 		}
 		name := rec.Path
 		if rec.PathB != "" {
 			b, err := base64.StdEncoding.DecodeString(rec.PathB)
 			if err != nil {
-				return nil, errBadDirs
+				return nil, nil, errBadDirs
 			}
 			name = string(b)
+		}
+		if name == "" {
+			others = append(others, rec.Ino)
+			continue
 		}
 		dirs[name] = dirIdentity{Ino: rec.Ino, CTime: rec.CTime}
 	}
@@ -422,6 +449,8 @@ func readDirs(path, wantSHA string) (map[string]dirIdentity, error) {
 type explainer struct {
 	list *listing
 	// baseDirs：完整備份當時，每個目錄的身分。只有在備份前後兩次清單裡 inode 相同的目錄才在裡面。
+	// baseInos：完整備份當時存在的每個目錄的 inode，包含不在 baseDirs 裡的那些。
+	// 一個目錄的 inode 不在這裡面，它才是完整備份之後新建的。
 	baseDirs map[string]dirIdentity
 	baseInos map[uint64]bool
 	// mounts 是現在樹裡的掛載點，baseMounts 是完整備份當時的。
@@ -536,9 +565,11 @@ func (x *explainer) keepBase(e indexEntry) bool {
 	}
 	if e.Type == typeHardlink {
 		// 硬連結只記「和哪個項目是同一個檔案」；那個項目也要留著才接得上。它一定排在前面。
+		// 留不住的情況只有一種來源：那個項目所在的目錄被改名或搬走了（直接刪掉或換掉它，
+		// 這個連結的變更時間會跟著變，就不會走到這裡）。所以原因和其他被搬動的檔案一樣。
 		target, j := x.list.lookup(e.Link)
 		if target == nil || j < 0 || target.state[j]&keptInBase == 0 {
-			x.fail(whyStructure, "a hard link would lose its target: "+plain(displayPath(name)))
+			x.unexplained(name)
 			return false
 		}
 	}
@@ -574,7 +605,7 @@ func (x *explainer) finish(baseEntries int64) (drop []byte, why, detail string) 
 				continue
 			}
 			for i := 0; i < dir.count(); i++ {
-				if dir.state[i]&(seenInDiff|keptInBase|isSocketBit) != 0 {
+				if dir.state[i]&(seenInDiff|keptInBase|isSocketBit|goneBit) != 0 {
 					continue
 				}
 				switch dir.mark(i) {
@@ -589,8 +620,9 @@ func (x *explainer) finish(baseEntries int64) (drop []byte, why, detail string) 
 						continue
 					}
 				}
-				// 清單裡有，這一趟沒收，完整備份裡也沒有。唯一正常的解釋是它在清單之後被刪掉了
-				// （否則它是新的，這一趟會收到）：那樣的話它所在的目錄剛剛變過。
+				// 清單裡有，這一趟沒收，完整備份裡也沒有。唯一正常的解釋是它在清單之後被刪掉或改名了
+				// （否則它是新的，這一趟會收到）。tar 走到它時才發現不見的，tar 會說，前面已經記下了；
+				// 剩下的是在那之前就不見的：那樣的話，tar 看到它所在的目錄時，目錄才剛變過。
 				// 一個從別處搬來的舊目錄不適用這個解釋：它底下的舊檔案本來就不會被這一趟收到。
 				if x.changedDuringRun(dir) && (x.sameDir(name, dir) || !x.baseInos[dir.ino]) {
 					continue

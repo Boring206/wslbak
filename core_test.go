@@ -329,6 +329,9 @@ func TestPlanRetentionKeepsWhatDifferentialsNeed(t *testing.T) {
 			[]*manifest{a, diff("11", a, true), diff("12", a, true), b, diff("21", b, true)}, 3, verifyRestore, "11"},
 		{"a differential that failed its check does not count as a good backup",
 			[]*manifest{a, diff("11", a, true), diff("12", a, false), diff("13", a, false), diff("14", a, false)}, 1, verifyRestore, "12"},
+		// 沒通過檢查的差異留著是為了查原因，不值得為它多留一整份完整備份。
+		{"a failed differential does not keep its full backup",
+			[]*manifest{a, diff("11", a, false), b}, 1, verifyRestore, "10"},
 		// 完整備份不見了的差異還原不出東西：就算關掉驗證也不算數，最多留兩份查原因。
 		{"orphans are never good backups",
 			[]*manifest{a, orphan("11"), orphan("12"), orphan("13")}, 5, verifyNone, "11"},
@@ -1357,6 +1360,35 @@ func TestTestFaults(t *testing.T) {
 	t.Setenv(envTestDiskFullAfter, "nonsense")
 	if w := withTestFaults(&plain); w != io.Writer(&plain) {
 		t.Errorf("a value that is not a number must be ignored")
+	}
+
+	// tar 說「走到時已經不見了」的那幾種話，要連檔名一起認得。
+	var log stderrLog
+	for _, line := range []string{
+		"tar: ./tmp/build/a b.o: File removed before we read it",
+		"tar: ./var/lib/x: Cannot stat: No such file or directory",
+		`tar: ./odd\nname: Cannot open: No such file or directory`,
+		"tar: ./etc/shadow: Cannot open: Permission denied",
+		"tar: ./var/log/syslog: file changed as we read it",
+	} {
+		log.add(line)
+	}
+	if got := strings.Join(log.vanished, "|"); got != `./tmp/build/a b.o|./var/lib/x|./odd\nname` {
+		t.Errorf("names that tar found gone: %q", got)
+	}
+	if len(log.tar) != 5 {
+		t.Errorf("%d lines kept for judging the run, want all 5", len(log.tar))
+	}
+
+	t.Setenv(envTestAgeHours, "48")
+	t.Setenv(envTestClockShift, "-100000")
+	t.Setenv(envTestSinceMargin, "0")
+	if testAge() != 48*time.Hour || testClockShift() != -100000 || currentSinceMargin() != 0 {
+		t.Errorf("in the sandbox: age %v, clock shift %d, margin %d", testAge(), testClockShift(), currentSinceMargin())
+	}
+	homeOverride = ""
+	if testAge() != 0 || testClockShift() != 0 || currentSinceMargin() != 300 {
+		t.Errorf("without --home the switches for differential backups must be ignored: age %v, clock shift %d, margin %d", testAge(), testClockShift(), currentSinceMargin())
 	}
 }
 

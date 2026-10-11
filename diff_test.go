@@ -253,35 +253,48 @@ func TestPackBits(t *testing.T) {
 	}
 }
 
-func TestDirsFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "20261015T030000Z.dirs.gz")
-	want := map[string]dirIdentity{".": {2, 111}, "./etc": {10, 222}, "./bad\xffname": {12, 333}}
-	sum, err := writeDirs(path, "20261015T030000Z", want)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := readDirs(path, sum)
-	if err != nil || len(got) != 3 || got["./etc"] != want["./etc"] || got["./bad\xffname"] != want["./bad\xffname"] {
-		t.Errorf("read back %v, %v", got, err)
-	}
-	if _, err := readDirs(path, strings.Repeat("0", 64)); !errors.Is(err, errBadDirs) {
-		t.Errorf("another checksum: err = %v", err)
-	}
-	if _, err := readDirs(path, ""); !errors.Is(err, errBadDirs) {
-		t.Errorf("no checksum recorded: err = %v", err)
-	}
-	if _, err := readDirs(filepath.Join(dir, "missing"), sum); !errors.Is(err, errBadDirs) {
-		t.Errorf("missing file: err = %v", err)
-	}
+// 打包前後的兩份清單：./a 沒變，./b 在途中被換成另一個目錄，./gone 消失了，./new 是途中才出現的，
+// 還有一個名稱不是 UTF-8 的目錄。
+func twoListings(t *testing.T) (before, after *listing, dumped map[string]int64) {
+	before = mustParse(t, buildSnapshot(snapDir{".", 2, []string{"Da", "Db", "Dgone", "Dbad\xffname"}},
+		snapDir{"./a", 3, nil}, snapDir{"./b", 4, nil}, snapDir{"./gone", 5, nil}, snapDir{"./bad\xffname", 12, nil}))
+	after = mustParse(t, buildSnapshot(snapDir{".", 2, []string{"Da", "Db", "Dnew", "Dbad\xffname"}},
+		snapDir{"./a", 3, nil}, snapDir{"./b", 44, nil}, snapDir{"./new", 6, nil}, snapDir{"./bad\xffname", 12, nil}))
+	return before, after, map[string]int64{".": 111, "./a": 222, "./b": 3, "./gone": 4, "./new": 5, "./only-dumped": 6, "./bad\xffname": 333}
 }
 
 func TestStableDirs(t *testing.T) {
-	before := mustParse(t, buildSnapshot(snapDir{".", 2, []string{"Da", "Db", "Dgone"}}, snapDir{"./a", 3, nil}, snapDir{"./b", 4, nil}, snapDir{"./gone", 5, nil}))
-	after := mustParse(t, buildSnapshot(snapDir{".", 2, []string{"Da", "Db", "Dnew"}}, snapDir{"./a", 3, nil}, snapDir{"./b", 44, nil}, snapDir{"./new", 6, nil}))
-	got := stableDirs(before, after, map[string]int64{".": 1, "./a": 2, "./b": 3, "./gone": 4, "./new": 5, "./only-dumped": 6})
-	if len(got) != 2 || got["."] != (dirIdentity{2, 1}) || got["./a"] != (dirIdentity{3, 2}) {
-		t.Errorf("stable directories = %v; want only . and ./a (./b was replaced, the others came or went)", got)
+	before, after, dumped := twoListings(t)
+	got, others := stableDirs(before, after, dumped)
+	if len(got) != 3 || got["."] != (dirIdentity{2, 111}) || got["./a"] != (dirIdentity{3, 222}) || got["./bad\xffname"] != (dirIdentity{12, 333}) {
+		t.Errorf("stable directories = %v; want ., ./a and the oddly named one (./b was replaced, the others came or went)", got)
+	}
+	// 不能拿來認路徑的目錄，inode 仍然要留著：之後看到它們時，知道它們不是新建的。
+	if fmt.Sprint(others) != "[4 5 6 44]" {
+		t.Errorf("inodes of the other directories = %v, want [4 5 6 44]", others)
+	}
+}
+
+func TestDirsFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "20261015T030000Z.dirs.gz")
+	before, after, dumped := twoListings(t)
+	sum, err := writeDirs(path, "20261015T030000Z", before, after, dumped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, others, err := readDirs(path, sum)
+	if err != nil || len(got) != 3 || got["./a"] != (dirIdentity{3, 222}) || got["./bad\xffname"] != (dirIdentity{12, 333}) || fmt.Sprint(others) != "[4 5 6 44]" {
+		t.Errorf("read back %v, %v, %v", got, others, err)
+	}
+	if _, _, err := readDirs(path, strings.Repeat("0", 64)); !errors.Is(err, errBadDirs) {
+		t.Errorf("another checksum: err = %v", err)
+	}
+	if _, _, err := readDirs(path, ""); !errors.Is(err, errBadDirs) {
+		t.Errorf("no checksum recorded: err = %v", err)
+	}
+	if _, _, err := readDirs(filepath.Join(dir, "missing"), sum); !errors.Is(err, errBadDirs) {
+		t.Errorf("missing file: err = %v", err)
 	}
 }
 
@@ -295,7 +308,11 @@ type world struct {
 	diff       []indexEntry
 	mounts     map[string]bool
 	baseMounts []string
+	// baseOthers 是完整備份當時存在、卻沒有被記成某個路徑的目錄的 inode。
+	baseOthers []uint64
 	socket     string
+	// gone 是 tar 在打包途中說「已經不見了」的名稱（tar 的寫法）。
+	gone []string
 }
 
 const (
@@ -327,8 +344,14 @@ func (w world) explain(t *testing.T) (kept []string, why string) {
 	for _, point := range w.baseMounts {
 		x.baseMounts[point] = true
 	}
+	for _, ino := range w.baseOthers {
+		x.baseInos[ino] = true
+	}
 	for _, e := range w.diff {
 		x.sawDiffEntry(e)
+	}
+	for _, quoted := range w.gone {
+		list.noteGone(quoted)
 	}
 	for _, e := range w.base {
 		x.sawBaseEntry(e)
@@ -440,6 +463,33 @@ func TestExplain(t *testing.T) {
 			w.now = []snapDir{{".", 2, []string{"Da", "Dc"}}, w.now[1], {"./c", 4, []string{"Yf1"}}}
 			w.diff = []indexEntry{dirAt(".", testListStart+5), dirAt("./a", 1000), dirAt("./c", testListStart+5)}
 		}, "", whyMoved},
+		// tar 走到那個名稱時它已經不見了：tar 會說，名稱照 tar 的寫法跳脫。
+		{"a new file that tar found gone when it got to it", func(w *world) {
+			w.now[2].children = []string{"Yf1", "Ys", "Ytemp file"}
+			w.gone = []string{"./b/temp file"}
+		}, everything, ""},
+		{"an old file that tar found gone stays as it was in the full backup", func(w *world) { w.gone = []string{"./b/f1"} }, everything, ""},
+		{"a directory that tar found gone after writing its entry", func(w *world) {
+			w.now[0].children = []string{"Da", "Db", "Dnew"}
+			w.now = append(w.now, snapDir{"./new", 50, []string{"Yx", "Yy"}})
+			w.diff = append(w.diff, dirAt("./new", 8000))
+			w.gone = []string{"./new"}
+		}, everything, ""},
+		{"a name tar reports that is not in the listing changes nothing", func(w *world) { w.gone = []string{"./b/never-seen", `./odd\q`} }, everything, ""},
+		// 一個新目錄在清單之後還在變：清單裡有、這一趟沒收到的名稱，是剛被刪掉的。
+		{"a file in a new directory was gone a moment later", func(w *world) {
+			w.now[0].children = []string{"Da", "Db", "Dc"}
+			w.now = append(w.now, snapDir{"./c", 50, []string{"Ytemp"}})
+			w.diff = append(w.diff, dirAt("./c", testListStart+5))
+		}, everything, ""},
+		// 同樣的情況，但那個目錄在完整備份當時就存在了（只是當時在備份途中被搬動，沒有記成路徑）：
+		// 它是舊目錄，底下沒收到的是舊檔案，不能當成剛被刪掉。
+		{"…but not in a directory that already existed at the time of the full backup", func(w *world) {
+			w.now[0].children = []string{"Da", "Db", "Dc"}
+			w.now = append(w.now, snapDir{"./c", 50, []string{"Yold"}})
+			w.diff = append(w.diff, dirAt("./c", testListStart+5))
+			w.baseOthers = []uint64{50}
+		}, "", whyMoved},
 		{"a directory that vanished after the listing takes its files with it", func(w *world) {
 			w.diff = []indexEntry{dirAt(".", testListStart+5), dirAt("./a", 1000)}
 		}, "./a/f1 ./a/f2 ./a/h", ""},
@@ -482,7 +532,14 @@ func TestExplain(t *testing.T) {
 			w.now = []snapDir{{".", 2, []string{"Da", "Db"}}, w.now[1], {"./b", 90, nil}}
 			w.diff[2] = dirAt("./b", 4000)
 		}, "./a/f1 ./a/f2 ./a/h", ""},
-		{"a hard link whose target is replaced while the link is not", func(w *world) { w.diff = append(w.diff, entry(typeFile, "./a/f1")) }, "", whyStructure},
+		// 硬連結所指的那個項目不留了，連結自己卻沒有被這一趟收進去：它接不上任何東西。
+		{"a hard link whose target is replaced while the link is not", func(w *world) { w.diff = append(w.diff, entry(typeFile, "./a/f1")) }, "", whyMoved},
+		{"a hard link whose target was in a directory that is gone", func(w *world) {
+			// 完整備份裡 ./b/h2 是指向 ./a/f1 的硬連結；之後 ./a 被改名成 ./c。
+			w.base = append(w.base, link("./b/h2", "./a/f1"))
+			w.now = []snapDir{{".", 2, []string{"Db", "Dc"}}, {"./b", 4, []string{"Yf1", "Ys", "Yh2"}}, {"./c", 3, []string{"Yf1", "Yf2", "Yh"}}}
+			w.diff = []indexEntry{dirAt(".", 8000), dirAt("./b", 1000), dirAt("./c", 8000)}
+		}, "", whyMoved},
 	}
 	for _, c := range cases {
 		w := quiet()
@@ -610,8 +667,8 @@ func TestRealDifferential(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	baseDirs := stableDirs(before, before, dumped)
-	if len(baseDirs) != len(dumped) {
+	baseDirs, others := stableDirs(before, before, dumped)
+	if len(baseDirs) != len(dumped) || len(others) != 0 {
 		t.Fatalf("%d of %d directories have an identity", len(baseDirs), len(dumped))
 	}
 	for name, id := range baseDirs {

@@ -148,6 +148,15 @@ func verifyLabel(m *manifest) string {
 	return T.LabelVerifyFailed
 }
 
+// lastingReason 回報一個「為什麼做完整備份」的原因是不是不處理就會一直發生的那種。
+func lastingReason(why string) bool {
+	switch why {
+	case whyFilesystem, whyAlias, whyListing, whyClock, whyStructure:
+		return true
+	}
+	return false
+}
+
 func kindLabel(m *manifest) string {
 	if m.isDiff() {
 		return T.KindDiff
@@ -256,8 +265,11 @@ func runOne(opts options, cfg *config, name string, distros []regDistro, wsl str
 		Distro: *d, Dir: dir, Excludes: dc.excludes(), WSL: wsl, Scheduled: opts.scheduled, OnProgress: bar.update,
 		Mode: dc.Mode, FullEvery: dc.fullEvery(), ForceFull: opts.full, Verify: cfg.Verify,
 		OnStage: func(stage string) {
+			// 列出檔案的那一趟沒有數字可報；輪到讀取時把那一行清掉，進度才不會疊在上面。
 			if stage == stageListing {
 				bar.say(T.ProgressListing)
+			} else {
+				bar.clear()
 			}
 		},
 	}
@@ -297,7 +309,12 @@ func runOne(opts options, cfg *config, name string, distros []regDistro, wsl str
 		return giveUpWith(backupErrorText(err), backupErrorBrief(err)+T.BriefSeeLog)
 	}
 	if why != "" {
+		logf("%s: a full backup instead of a differential: %s", name, why)
 		fmt.Println("  " + dim(fmt.Sprintf(T.RunFullBecause, whyText(why))))
+	}
+	st.LastKind, st.LastWhy = kindFull, why
+	if m.isDiff() {
+		st.LastKind = kindDiff
 	}
 	took := humanDuration(time.Duration(m.Seconds * float64(time.Second)))
 	if m.isDiff() {
@@ -537,6 +554,18 @@ func cmdStatus(opts options) int {
 		}
 		if st.LastResult != "" && st.LastResult != resultOK && st.LastMessage != "" {
 			fmt.Println("  " + yellow(fmt.Sprintf(T.StatusLastProblem, humanSince(st.LastAttempt, now), st.LastMessage)))
+		}
+		// 差異模式開著時，說上一份是哪一種；做了完整備份的話說原因。有些原因不會自己消失
+		// （檔案系統不對、資料夾被掛了兩次），那樣的話差異備份等於沒有開。
+		if dc.Mode == modeDiff && st.LastKind != "" {
+			switch {
+			case st.LastKind == kindDiff:
+				fmt.Println("  " + T.StatusDiffLast)
+			case lastingReason(st.LastWhy):
+				fmt.Println("  " + yellow(fmt.Sprintf(T.StatusDiffFull, whyText(st.LastWhy))))
+			case st.LastWhy != "":
+				fmt.Println("  " + fmt.Sprintf(T.StatusDiffFull, whyText(st.LastWhy)))
+			}
 		}
 	}
 	return code

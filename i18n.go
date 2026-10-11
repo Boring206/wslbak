@@ -428,6 +428,8 @@ type catalog struct {
 	RestoreOrphan     string // 編號, 完整備份的編號
 	RestoreIncomplete string // 名稱
 	NotifyOKChecked   string // 編號, 大小
+	StatusDiffLast    string
+	StatusDiffFull    string // 原因
 
 	// 放在備份資料夾裡的說明檔；兩種語言都會寫進去。
 	RestoreReadme string
@@ -545,7 +547,7 @@ var zhTW = catalog{
 	InitChangesTitle:      "會建立或修改：",
 	InitChangeLabels:      [5]string{"程式", "設定", "排程", "登錄", "還原包"},
 	InitTaskLine:          "工作排程器的「%[1]s」，執行 %[2]s %[3]s",
-	InitWhatHappens:       "每次備份會做的事：在 distro 裡以 root 讀取所有檔案並打包（distro 照常執行，不會被寫入）；\n把備份匯入成一個暫時的 distro，檢查後移除；刪掉超過保留份數的舊備份。\ndistro 當時沒有在執行的話會被啟動。",
+	InitWhatHappens:       "每次備份會做的事：在 distro 裡以 root 讀取所有檔案並打包（distro 照常執行，磁碟不會被寫入）；\n把備份匯入成一個暫時的 distro，檢查後移除；刪掉超過保留份數的舊備份。\ndistro 當時沒有在執行的話會被啟動。",
 	InitNever:             "不會做的事：不會關閉 WSL 或停止 distro、不會修改或移除任何既有的 distro、不需要系統管理員權限。",
 	WarnSameVolume:        "注意：備份和 distro 放在同一個磁碟區（%s）。重灌 Windows 或磁碟故障時，備份會一起消失。",
 	WarnSameDisk:          "注意：%[1]s 和 distro 所在的 %[2]s 是同一顆實體磁碟。磁碟本身故障的話備份會一起消失；要防這種情況，請把備份放到外接碟或 NAS。",
@@ -776,6 +778,8 @@ var zhTW = catalog{
 	RestoreOrphan:       "%[1]s 是差異備份，但它所依據的完整備份 %[2]s 不在了（或不是當初那一份），沒辦法還原成一個 distro。請改用別份。",
 	RestoreIncomplete:   "還原沒有完成，但 WSL 可能已經建立了不完整的 distro %[1]s。請不要使用它；確認之後自行把它取消註冊（wslbak 不會移除任何 distro）。",
 	NotifyOKChecked:     "%[1]s（%[2]s）已通過檢查。",
+	StatusDiffLast:      "差異備份：開啟；上一份是差異備份。",
+	StatusDiffFull:      "差異備份：開啟；上一份是完整備份，因為%s。",
 	RestoreReadme: `這個資料夾是 wslbak 做的 WSL 備份（https://github.com/Boring206/wslbak）
 
 每個子資料夾是一個 distro。一份完整備份有三個檔案：
@@ -930,7 +934,7 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	InitChangesTitle:      "This will create or change:",
 	InitChangeLabels:      [5]string{"Program", "Settings", "Schedule", "Registry", "Restore kit"},
 	InitTaskLine:          "the task \"%[1]s\" in Task Scheduler, running %[2]s %[3]s",
-	InitWhatHappens:       "Each backup: reads every file inside the distro as root and archives it (the distro keeps running and is not written to);\nimports the backup as a temporary distro, checks it, and removes it; deletes backups beyond the number to keep.\nIf the distro is not running at that time, it is started.",
+	InitWhatHappens:       "Each backup: reads every file inside the distro as root and archives it (the distro keeps running and nothing is written to its disk);\nimports the backup as a temporary distro, checks it, and removes it; deletes backups beyond the number to keep.\nIf the distro is not running at that time, it is started.",
 	InitNever:             "It never shuts down WSL or stops a distro, never changes or removes an existing distro, and needs no administrator rights.",
 	WarnSameVolume:        "Note: the backups and the distro are on the same volume (%s). Reinstalling Windows or a disk failure would take the backups too.",
 	WarnSameDisk:          "Note: %[1]s is on the same physical disk as %[2]s, where the distro lives. If that disk fails the backups go with it; use an external drive or a NAS to guard against that.",
@@ -1161,6 +1165,8 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	RestoreOrphan:       "%[1]s is a differential backup, and the full backup %[2]s it was made from is missing (or is not the same file any more), so it cannot be restored as a distro. Choose another backup.",
 	RestoreIncomplete:   "The restore did not finish, but WSL may have created an incomplete distro %[1]s. Do not use it; after checking, unregister it yourself (wslbak never removes a distro).",
 	NotifyOKChecked:     "%[1]s (%[2]s) passed its check.",
+	StatusDiffLast:      "Differential backups: on; the last backup was a differential.",
+	StatusDiffFull:      "Differential backups: on; the last backup was a full one, because %s.",
 	RestoreReadme: `WSL backups made by wslbak (https://github.com/Boring206/wslbak)
 
 Each subfolder is one distro. A full backup is three files:

@@ -29,7 +29,48 @@ const (
 	envTestReadRate = "WSLBAK_TEST_READ_MIB_PER_SECOND"
 	// 把「握著鎖的那個 wslbak 已經跑了多久」多算這麼多小時，測試才不必真的等上一天。
 	envTestLockAgeHours = "WSLBAK_TEST_LOCK_AGE_HOURS"
+	// 決定「這次做完整還是差異」時，把現在的時間多算這麼多小時：測試才不必等完整備份變舊。
+	envTestAgeHours = "WSLBAK_TEST_AGE_HOURS"
+	// 把 distro 回報的時鐘加上這麼多秒（可以是負的）。所有 distro 共用一個時鐘，
+	// 測試不能真的去調它；這樣就能看到「時鐘被往回調」時程式怎麼反應。
+	envTestClockShift = "WSLBAK_TEST_CLOCK_SHIFT_SECONDS"
+	// 基準時間往前留的那一段改成這麼多秒。平常是五分鐘：測試不能等那麼久才讓一個檔案算「舊的」。
+	envTestSinceMargin = "WSLBAK_TEST_SINCE_MARGIN_SECONDS"
 )
+
+// currentSinceMargin 是基準時間往前留的那一段（秒）；沙箱裡可以用環境變數改短。
+func currentSinceMargin() int64 {
+	if homeOverride != "" {
+		if n, err := strconv.ParseInt(os.Getenv(envTestSinceMargin), 10, 64); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return int64(sinceMargin / time.Second)
+}
+
+// testAge 見 envTestAgeHours。
+func testAge() time.Duration {
+	if homeOverride == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(os.Getenv(envTestAgeHours))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Hour
+}
+
+// testClockShift 見 envTestClockShift。
+func testClockShift() int64 {
+	if homeOverride == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(os.Getenv(envTestClockShift), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
 
 // testLockAge 見 envTestLockAgeHours。
 func testLockAge() time.Duration {

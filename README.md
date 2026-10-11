@@ -5,9 +5,10 @@
 Scheduled backups of a WSL distro that do not stop it, a test restore after every backup, a
 notification when something fails, and a one-line restore.
 
-> **Status: 0.1.x, the first public releases.** An automated suite has made real backups, test
-> restores and restores on 18 distros and three builds of Windows, but nobody has used wslbak day
-> to day yet. Keep the backups you already have until it has proven itself on your PC.
+> **Status: 0.2, early releases.** An automated suite has made real backups, test restores and
+> restores on 18 distros and three builds of Windows, but nobody has used wslbak day to day yet.
+> Keep the backups you already have until it has proven itself on your PC. Differential backups
+> are new in 0.2.0 and switched off unless you turn them on.
 
 ![A one-minute tour: setting up, backing up, looking inside a backup, bringing back one file, restoring a whole distro](docs/demo.en.gif)
 
@@ -15,7 +16,9 @@ The same tour as a [video](docs/demo.en.mp4). It is a recording of the commands 
 PC where wslbak was installed from its npm package and a demo distro named `wslbak-demo` existed;
 no text that the commands printed is changed. The drawing script adds the step titles and the cards
 at the start and the end, types the commands at a drawn speed, shows long output a page at a time
-and shortens waits.
+and shortens waits. The recording was made with version 0.1.0; since then `init` ends with one more
+line (a hint about differential backups) and `list` has a column that says whether a backup is a
+full or a differential one.
 
 Files inside WSL are not covered by OneDrive or most backup tools: they live in one virtual disk, and
 when that disk is damaged or Windows is reinstalled, everything in it is gone. The usual answer is a
@@ -38,10 +41,13 @@ Done.
 is larger and takes correspondingly longer.)
 
 - **The distro is never stopped.** A root `tar` inside the distro streams it out; WSL is not shut down
-  and nothing in the distro is written to.
+  and nothing is written to the distro's disk.
 - **Every backup is test-restored**, unless you switch that off. The archive is imported as a
   temporary distro, checked, and removed.
-- **Standard format.** A backup is a plain `.tar.gz` that `wsl --import` accepts, with or without wslbak.
+- **Standard format.** A full backup is a plain `.tar.gz` that `wsl --import` accepts, with or
+  without wslbak.
+- **Differential backups, if you want them.** `wslbak config --mode diff` makes a full backup now
+  and then, and on the other days stores only what changed ([how, and what it costs](#differential-backups)).
 - **One command to set up**: a daily task, how many backups to keep, where they go.
 - **Restore never overwrites.** A whole distro comes back as a new distro; single files come back into
   a new folder.
@@ -101,12 +107,13 @@ destination is on the same physical disk as the distro.
 ```
 wslbak init              set up backups and the daily task
 wslbak config            show the settings; with options, change them
-wslbak run               back up now, test-restore, prune old backups
+wslbak run               back up now, test-restore or check, prune old backups
 wslbak list              list backups
 wslbak files [id] [path] list what a backup holds in a folder
 wslbak status            schedule, last result, and whether the installed program is still there
 wslbak doctor            check the environment and settings, with a fix for most problems
-wslbak verify [id]       test-restore an existing backup again (default: the newest)
+wslbak verify [id]       test-restore an existing backup again (default: the newest); a
+                         differential is restored together with its full backup
 wslbak restore [id]      restore a backup as a new distro (default: the newest verified one)
 wslbak uninstall         remove the task and the installed program; backups are kept
 
@@ -125,6 +132,9 @@ wslbak uninstall         remove the task and the installed program; backups are 
       --unexclude <pattern>  config: stop excluding a pattern (repeatable)
       --enable, --disable  config: turn backups of one distro on or off
       --private            config: let only your account open the backup folder
+      --mode <how>         config: full (default) or diff, see "Differential backups"
+      --full-every <days>  config: with diff, how long one full backup is built on (default 30)
+      --full               run: make a full backup this time
       --no-verify          run: skip the test restore this time
       --find <text>        files: list entries whose name or path contains this text
       --name <name>        restore: name of the restored distro
@@ -151,8 +161,8 @@ Inside WSL you can give Linux paths (`--dest /mnt/d/WSLBackup`); they are conver
 wslbak restore
 ```
 
-restores the newest backup that passed its test restore; if none has passed, it offers the newest
-one and says so. If a distro with the original name still
+restores the newest backup that passed its test restore (for a differential, its check); if none
+has passed, it offers the newest one and says so. If a distro with the original name still
 exists, the copy is called `<name>-restored-<date>`; pick your own with `--name`. An existing distro
 is never overwritten, changed or removed, and the restored one is not started for you.
 
@@ -168,7 +178,7 @@ D:\WSLBackup\wslbak.exe restore
 
 (`D:\WSLBackup` stands for your backup folder: the one `init` proposed, or the one you chose.)
 
-**Without wslbak at all**, a backup is an ordinary archive:
+**Without wslbak at all**, a full backup is an ordinary archive:
 
 ```
 wsl --import Ubuntu-24.04 C:\WSL\Ubuntu-24.04 D:\WSLBackup\Ubuntu-24.04\20260115T030000Z.tar.gz --version 2
@@ -176,6 +186,11 @@ wsl --import Ubuntu-24.04 C:\WSL\Ubuntu-24.04 D:\WSLBackup\Ubuntu-24.04\20260115
 
 A distro imported by hand logs in as root; add `[user]` and `default=<your user name>` to its
 `/etc/wsl.conf` to change that. `wslbak restore` sets the default user for you.
+
+A differential backup (`<id>.diff.tar.gz`) cannot be imported like that: it holds only what changed.
+`wslbak restore` puts it together with its full backup. Without wslbak, importing the full backup
+brings back the day of the full backup, and the differential, itself a plain `.tar.gz`, can be
+opened with any tar to take single files out of it.
 
 ## Bringing back single files
 
@@ -199,6 +214,9 @@ Without an id, `files` looks in the newest backup whether or not it was verified
 `restore --path` takes the newest verified one, as `restore` does. Give both the same id when that
 matters.
 
+A differential backup shows, and gives back, the distro as it was on its day: what the
+differential holds, and from its full backup everything that had not changed or been deleted.
+
 ## What is backed up
 
 Everything on the distro's root file system, with ownership, permissions, extended attributes, file
@@ -211,6 +229,7 @@ wslbak config                                         show the settings
 wslbak config --exclude "/home/*/Downloads/*"         leave something out
 wslbak config --keep 3 --keep-weekly 4 --keep-monthly 6
 wslbak config --at 02:30
+wslbak config --mode diff                             differential backups (see below)
 ```
 
 - `--exclude` takes a path pattern inside the distro; `*` matches anything, `/` included. Quote it,
@@ -218,8 +237,8 @@ wslbak config --at 02:30
 - `--keep` is the number of newest verified backups. `--keep-weekly` and `--keep-monthly` also keep
   the newest backup of each of the last n weeks or months that have one (the current week and month
   count), so they add a few older copies. They do not make backups smaller. To use less space,
-  exclude what can be downloaded again: `wslbak doctor` measures the usual caches and prints the
-  command for each.
+  exclude what can be downloaded again (`wslbak doctor` measures the usual caches and prints the
+  command for each), or switch to [differential backups](#differential-backups).
 - `--verify none` turns the test restore off; then the newest backups are kept regardless.
 - `--notify always` also notifies on success, so that silence means the task is not running.
 - Run `wslbak init -d <other distro>` to add another distro. One daily task covers all of them.
@@ -227,8 +246,72 @@ wslbak config --at 02:30
 The settings are stored in `%LOCALAPPDATA%\wslbak\config.json`. Each backup is three files in
 `<dest>\<distro>\`: `<id>.tar.gz`, `<id>.json` (size, SHA-256, warnings, the result of the test
 restore) and `<id>.idx.gz` (the list of files, used by `wslbak files`). The id is the UTC time of
-the backup. Next to the settings wslbak keeps `state.json` (the last results), `wslbak.log` and a
+the backup. A differential backup has `<id>.diff.tar.gz` in the place of `<id>.tar.gz`, and a full
+backup made while differential backups are on has a fourth file, `<id>.dirs.gz` (see below). Next
+to the settings wslbak keeps `state.json` (the last results), `wslbak.log` and a
 lock file; `wslbak.exe` and `README-RESTORE.txt` in `<dest>` are written again on every run.
+
+## Differential backups
+
+As it comes, wslbak makes a full copy of the distro on every run. With
+
+```
+wslbak config --mode diff
+```
+
+it makes a full backup now and then, and on the other days a differential: the files whose content
+or attributes changed since that full backup, and every directory. A differential depends on its
+full backup and on nothing else, so a restore never needs more than two archives, and deleting one
+differential does not affect another. `wslbak config --mode full` switches back.
+
+@@NUMBERS@@
+
+- **How long a full backup is built on.** 30 days, or what you give with `--full-every <days>`; the
+  backup after that is a full one. `wslbak run --full` makes a full backup at any time. A
+  differential that has grown to more than half the size of its full backup is also the last one
+  on it.
+- **Restoring is the same.** `restore`, `restore --path`, `files` and `verify` take a differential
+  like any backup. wslbak puts it together with its full backup: the differential's directories,
+  then everything in the full backup that the differential did not replace and that had not been
+  deleted, then the differential's files. Each path is written once, and a whole distro is still
+  one `wsl --import`.
+- **What counts as changed** is decided by GNU tar, from the two times the file system keeps for
+  every file: when its content was last modified, and when anything about it last changed (its
+  name, mode, owner, links). A file that changed at all is stored again as a whole.
+- **A differential is only kept when every file can be accounted for.** After tar has written it,
+  wslbak goes through a list of everything in the distro: each file must be in the differential,
+  or be in the full backup at the same path, in a folder that is still the same folder (the same
+  inode as recorded with the full backup). If that holds, the backup's record says which entries of
+  the full backup this restore point no longer wants. If it does not, the differential is thrown
+  away and that run makes a full backup instead, and tells you why:
+  - an old folder was renamed or moved, or two folders changed places. The files in it did not
+    change, so tar does not pick them up, and they are not where the full backup has them. (A
+    renamed file is no problem, and neither is a new folder.)
+  - a folder of the distro is mounted at a second place inside it, so everything in it is seen
+    twice;
+  - the exclude list changed, or the distro's tar is another version;
+  - the distro's clock is earlier than it was at the full backup, or a folder carries a change time
+    from before the full backup that it did not have then;
+  - the root file system is not ext4;
+  - the full backup failed its test restore, or the last differential failed its check.
+
+  `wslbak run` prints the reason. A scheduled run has no window, so `wslbak status` says whether the
+  last backup was a differential and, if it was a full one, why. Some reasons do not go away by
+  themselves (the file system, a folder mounted twice); with those, differential backups are in
+  effect off for that distro.
+- **Checking.** A full backup is test-restored after every run, as always. A differential is read
+  back after every run (it unpacks, its checksum and its number of entries are what was written,
+  its full backup is in place with the size it had), and is test-restored together with its full
+  backup for the first differential of each full backup and again whenever the last such test is
+  seven days old. `wslbak verify <id>` does the real test restore whenever you ask.
+- **Keeping.** `--keep` and the weekly and monthly rules count every backup, full or differential,
+  as one. A full backup is never deleted while a differential that passed its check still needs
+  it, so a few more files than `--keep` says can be there.
+- **What it writes inside the distro.** To know what is there now, tar first walks the whole tree
+  without opening any file and leaves a list of the names. That list is a temporary file under
+  `/run`, which is memory and not the distro's disk; only root can read it, and it is deleted as
+  soon as wslbak has read it. A full backup made in this mode keeps the part of the list it needs
+  later, the inode of every directory, as `<id>.dirs.gz`.
 
 ## The test restore
 
@@ -249,8 +332,9 @@ refuses to start the copy unless that file is the one that ended up in place.
 WSL makes a Start Menu folder for every distro it imports and does not always take it away again;
 wslbak removes the empty one that its temporary distro leaves behind.
 
-Only verified backups count towards `--keep`. Backups that could not be verified are kept separately,
-at most two, so a run of failures never pushes out your good backups.
+Only verified backups count towards `--keep` (a differential counts when it passed its check, see
+[Differential backups](#differential-backups)). Backups that could not be verified are kept
+separately, at most two, so a run of failures never pushes out your good backups.
 
 ## Notifications
 
@@ -275,11 +359,13 @@ missing, or when the installed program has disappeared.
 - Old backups are deleted one file at a time, and only files that have a wslbak manifest next to them.
   Other files in the backup folder are left alone, even ones that look like backups. Nothing is
   deleted in a folder that holds backups written by a newer version of wslbak. The one exception is
-  wslbak's own unfinished file, `<id>.tar.gz.partial`: what an interrupted run left is removed by
-  the next run.
+  wslbak's own unfinished files, `<id>.tar.gz.partial` and the like: what an interrupted run left is
+  removed by the next run.
+- A full backup is not deleted while a differential that passed its check depends on it.
 - `restore` refuses a name that is in use and a folder that is not empty, for distros and for files.
-- The scripts that run inside your distro never delete anything, and use nothing beyond the shell,
-  coreutils and tar. What you type for `--path`, `--into` and `--exclude` never becomes part of a
+- The scripts that run inside your distro never delete anything of yours, and use nothing beyond the
+  shell, coreutils and tar. (With differential backups on, the backup script removes the one
+  temporary file it wrote itself under `/run`.) What you type for `--path`, `--into` and `--exclude` never becomes part of a
   command line that a shell interprets: `--path` does not enter the distro at all, and the other two
   arrive as data and are only handed on as single arguments (to `tar --exclude=…`, and to the
   commands that check and fill the target folder).
@@ -321,6 +407,13 @@ that ships with WSL 2.7 (bsdtar 3.7.7) believes the zero: such a file comes back
 corrects the header's checksum to match), so the archive restores correctly there too. Nothing else
 is changed, and the archive stays a valid tar.
 
+With differential backups on, the same script is run in two more ways. First with tar writing to
+`/dev/null` and `--listed-incremental`: tar then opens no file and only records, in a snapshot
+file, every directory with its inode and the names in it. Then, for a differential, with
+`--after-date` and the time of the full backup. The snapshot option is used for that listing only;
+the archives themselves are never in tar's incremental format, which could not be restored without
+deleting and renaming things inside a distro.
+
 The scheduled task belongs to your Windows account and runs with your sign-in session. It starts a
 windowless copy of the program kept in `%LOCALAPPDATA%\Programs\wslbak`, so it does not depend on Node
 or on anything inside a distro. The task is set to run as soon as possible after a missed start and
@@ -345,7 +438,21 @@ the last 20 hours.
   in Explorer and confirm its question, or use an administrator's terminal, before you can restore.
   Only verify or restore backups from a folder that nobody else can write to: a test restore runs
   programs that come out of the backup.
-- **Every backup is a full copy.** There is no incremental mode yet.
+- **Differential backups have limits of their own**, besides being new:
+  - They trust the distro's clock. tar picks the files whose times are later than the full backup
+    (less five minutes). If the clock is set back between two backups and a file changes during
+    that time, its times can be earlier than the full backup, and the file is missed until the
+    next full backup. wslbak makes a full backup when it notices: when the clock is earlier than
+    at the full backup, and when a folder carries a change time from before the full backup that
+    it did not have then. A file rewritten in place while the clock was back, in a folder where
+    nothing else happened, is not noticed.
+  - Only on ext4, the file system WSL gives a distro. Elsewhere every backup is a full one.
+  - After an old folder was renamed or moved, the next backup is a full one, however little else
+    changed.
+  - A file that changed at all is stored again as a whole, a large database or disk image included.
+  - A differential is worth nothing without its full backup. If the full backup is damaged or
+    deleted by hand, its differentials cannot be restored as a distro (`list` marks them, and
+    single files can still be taken out of their archives with tar).
 - **GNU tar is required inside the distro.** A distro with BusyBox tar (Alpine as it comes) or with no
   tar (openSUSE Tumbleweed as it comes) is refused, with the command that installs it.
 - **Only what is on the root file system.** A folder mounted from another disk is skipped.
@@ -439,9 +546,10 @@ python3 inside WSL, a Python with Pillow on Windows and, for the video file, ffm
 Set `E2E_DISTRO` to test another family (`FedoraLinux-44`, `archlinux`, `openSUSE-Tumbleweed`,
 `alpine`, …), or `E2E_ROOTFS_URL` to import a root file system that `wsl --install` does not offer.
 `E2E_FAST=1` leaves out the parts that only exercise Windows, and `E2E_TOAST=1` adds a check that
-shows a real notification. Two slower scripts are run by hand: `scripts/e2e-scale.sh` (millions of
-files, a file over 8 GiB) and `scripts/e2e-services.sh` (a busy Docker Engine and SQLite databases
-that are being written). The
+shows a real notification. Three more scripts are run by hand: `scripts/e2e-scale.sh` (millions of
+files, a file over 8 GiB), `scripts/e2e-services.sh` (a busy Docker Engine and SQLite databases
+that are being written) and `scripts/e2e-tarfacts.sh` (what differential backups take for granted
+about GNU tar, ext4 and `wsl --import`; it needs python3). The
 tests never touch another distro or your real wslbak settings.
 
 The tests reach a few situations through switches that only work together with the sandbox option

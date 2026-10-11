@@ -27,6 +27,11 @@ programs until `wsl --shutdown`. Either add the project folder and `%LOCALAPPDAT
 the antivirus exceptions, or let GitHub run the suite: push a branch and start the `e2e` workflow
 on it with `gh workflow run e2e --ref <branch>`.
 
+`scripts/e2e-tarfacts.sh` is not a test of wslbak but of what differential backups assume about GNU
+tar, ext4 and `wsl --import`. Run it (per distro, with `E2E_DISTRO`) when you change how `backup.sh`
+calls tar, and when a new release of GNU tar or WSL is to be supported. After a change to how
+`backup.sh` calls tar, also regenerate the test data with `scripts/mkfixtures.sh`.
+
 Before sending a change, please also run what the `lint` job runs: `gofmt -l .`, `staticcheck`,
 `govulncheck` and `shellcheck` (the commands are in `.github/workflows/test.yml`).
 
@@ -41,6 +46,13 @@ Before sending a change, please also run what the `lint` job runs: `gofmt -l .`,
   as text to be parsed.
 - **The scripts that run inside the distro** use only the shell, coreutils and tar (no awk, sed,
   grep, perl, python), never `rm -r`, and end with `main "$@" </dev/null`. A test checks their shape.
+  They write nothing to the distro's disk; the one temporary file (tar's listing, for differential
+  backups) goes under `/run` and is removed by the script that made it.
+- **A differential backup is only kept when it can be shown to be right.** `diff.go` has to account
+  for every file in the listing: it is in the differential, or it is in the full backup at the same
+  path, in a directory that is still the same directory. Whatever cannot be accounted for makes
+  that run a full backup, with the reason shown. Do not add a case that "probably" is fine.
+- **A full backup stays an archive that `wsl --import` accepts as it is**, whatever mode made it.
 - **`--dry-run` creates nothing**, not even a log file.
 - **Every message the user sees lives in `i18n.go`**, once in English and once in Traditional
   Chinese. A test checks that neither is missing. Log lines and `--debug` output are English.

@@ -1,11 +1,40 @@
 # Changelog
 
-## 0.1.2
+## 0.2.0
 
-Two safeguards against a run that never ends. Before, such a run meant that backups stopped without
-any notification: the stuck run could not report anything, and every later scheduled run found it
-still holding the lock and ended quietly.
+Differential backups: a full backup now and then, and in between only what changed since it. They
+are off by default; nothing changes for a setup that does not switch them on. Also in this release
+are two safeguards against a run that never ends, which were prepared as 0.1.2; that version was
+never published.
 
+- `wslbak config --mode diff` switches a distro to differential backups, `--mode full` back.
+  `--full-every <days>` says for how long one full backup is built on (default 30), and
+  `wslbak run --full` makes a full backup this once. `wslbak init` mentions the option.
+- A differential is `<id>.diff.tar.gz`: the files whose content or attributes changed since the full
+  backup, and every directory. `list` has a column for the kind. `restore`, `verify`, `files` and
+  `restore --path` take a differential like any other backup and put it together with its full
+  backup; a whole distro is still restored with a single `wsl --import`.
+- A differential is only kept when wslbak can account for every file: it is in the differential, or
+  it is unchanged in the full backup, in a directory that is still the same directory. When it
+  cannot, that run makes a full backup instead and says why. This happens after an old folder was
+  renamed, moved or swapped with another, when a folder of the distro is mounted at a second place
+  inside it, when the exclude list or the distro's tar changed, when the clock does not fit the
+  full backup, and on a root file system other than ext4. `wslbak status` shows whether the last
+  backup was a differential and, if not, the reason.
+- A full backup is test-restored after every run, as before. A differential is read back and
+  checked after every run, and test-restored together with its full backup for the first
+  differential of each full backup and every seven days; `wslbak verify` always does the real
+  test restore.
+- A full backup is never deleted while a differential that passed its check still needs it.
+  Otherwise retention counts every backup, full or differential, as one.
+- Full backups are the same archives as before, and 0.1.x can list, test-restore and restore them.
+  0.1.x does not show differentials, and deletes nothing in a folder that holds them. It refuses a
+  settings file in which differential backups are switched on ("written by a newer version"), until
+  `wslbak config --mode full` of this version has switched them off again; the copy of the program
+  in the backup folder needs no settings file to restore.
+- With differential backups on, each run writes one temporary file inside the distro: tar's list of
+  directories and file names, under `/run` (memory, not the distro's disk), removed when it has
+  been read. Without them a backup still writes nothing inside the distro.
 - A scheduled run that finds another wslbak still running after 20 hours now fails (exit code 2) and
   notifies you that a backup has been running for that many hours and is probably stuck. A run
   started by hand says so too.

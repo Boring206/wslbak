@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Size tests for wslbak: a distro with a very large number of files, and one file bigger
-# than the 8 GiB that a classic tar header can describe. Slow and hungry for disk space
-# (about three times the size of the big file), so it is not part of npm run e2e.
+# than the 8 GiB that a classic tar header can describe; at the end, a differential backup
+# of the same distro. Slow and hungry for disk space (about four times the size of the big
+# file), so it is not part of npm run e2e.
 #
 #   bash scripts/e2e-scale.sh [number of files] [size of the big file in GiB]
 #
@@ -125,5 +126,39 @@ expect_true "and it is identical to the original" [ -n "$BIG_SUM" -a "$(sh_in "$
 run restore --path /scale/files/d7 --into /scale-back-d7 --yes
 expect_rc 0 "restore --path brings back a folder"
 expect_true "with all its files" [ "$(sh_in "$DISTRO" 'find /scale-back-d7/scale/files/d7 -type f | wc -l')" = 1000 ]
+
+section "Differential backups"
+# The listing pass and the comparison with the full backup's index are the parts that grow
+# with the number of files.
+run config --mode diff
+expect_rc 0 "config --mode diff succeeds"
+run --debug run
+expect_rc 0 "a full backup in differential mode succeeds"
+note "the full backup with its two listings took $TOOK s, peak memory $(debug_value 'peak memory')"
+note "$(sed -n 's/^\[debug\] \(listing of .*\)$/\1/p' <<<"$OUT" | head -n 1)"
+sh_in "$DISTRO" 'cd /scale/files && echo changed >d7/1 && rm d8/2 && echo new >d9/new && mkdir -p /scale/added && echo x >/scale/added/x' >/dev/null
+run --debug run
+expect_rc 0 "a differential after a few changes succeeds"
+expect_has "what changed since the full backup" "it is a differential"
+expect_has "test restore passed" "and passes its test restore together with the full backup"
+PEAK="$(debug_value 'peak memory')"
+note "the differential took $TOOK s, peak memory $PEAK: $(grep -E 'wrote |test restore passed' <<<"$OUT" | sed 's/^ *//' | tr '\n' ';')"
+note "$(sed -n 's/^\[debug\] \(differential .* written.*\)$/\1/p' <<<"$OUT" | head -n 1)"
+expect_true "the program stays well under a gigabyte of memory" bash -c 'case "$0" in *" MB" | *" KB") exit 0 ;; *) exit 1 ;; esac' "$PEAK"
+run --debug files /scale/files/d9
+expect_rc 0 "files lists a folder of the differential restore point"
+expect_has "new" "with the file that was added"
+note "files took $TOOK s, peak memory $(debug_value 'peak memory')"
+run restore --name "$RESTORED" --to "$SANDBOX/restored" --yes
+expect_rc 0 "restore from the differential succeeds"
+note "restore took $TOOK s"
+if registered "$RESTORED"; then
+	expect_true "the restored copy has every small file, with the three changes" [ "$(sh_in "$RESTORED" 'find /scale/files -type f | wc -l; cat /scale/files/d7/1 /scale/files/d9/new /scale/added/x; ls /scale/files/d8/2 2>/dev/null' | tr '\n' ' ')" = "$FILES changed new x " ]
+	expect_true "and the big file, which came from the full backup" [ -n "$BIG_SUM" -a "$(sh_in "$RESTORED" 'sha256sum /scale/big.bin | cut -d" " -f1')" = "$BIG_SUM" ]
+	wsl_exe --terminate "$RESTORED" </dev/null >/dev/null 2>&1
+else
+	bad "the distro restored from the differential is not registered"
+fi
+unregister_guarded "$RESTORED" "$RESTORED_DIR" 2>/dev/null
 
 finish

@@ -218,6 +218,10 @@ type distroState struct {
 	LastID      string    `json:"lastId"`
 	LastResult  string    `json:"lastResult"`
 	LastMessage string    `json:"lastMessage"`
+	// LastKind 是上一份備份的種類（full 或 diff）；LastWhy 是差異模式開著、卻做了完整備份時的原因代碼。
+	// 排程執行時沒有畫面，status 靠這兩個欄位告訴使用者差異備份有沒有真的在做。
+	LastKind string `json:"lastKind,omitempty"`
+	LastWhy  string `json:"lastWhy,omitempty"`
 }
 
 type runState struct {

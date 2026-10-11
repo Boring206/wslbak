@@ -23,7 +23,8 @@ import (
 
 // 備份不呼叫 wsl --export（它會先把執行中的 distro 終止）。
 // 改成在 distro 裡以 root 執行 tar，把原始的 tar 從 stdout 送出來，在 Windows 這邊壓縮、算雜湊、寫檔。
-// distro 全程照常運作，備份對它是唯讀的。
+// distro 全程照常運作，它的磁碟不會被寫入。唯一寫進 distro 的東西是差異模式下的清單暫存檔，
+// 放在 /run（記憶體）裡，讀完就刪（見 backup.sh 與 snapshot.go）。
 
 const (
 	// stallLimit：這麼久沒有收到任何資料就放棄。備份可以跑很久，所以不設總時間上限，只看有沒有在動。
@@ -138,11 +139,23 @@ type stderrLog struct {
 	tar    []string
 	notes  []string // wsl.exe 自己的警告
 	totals int64
+	// vanished 是 tar 走到時已經不見的名稱（tar 的寫法，還沒還原跳脫）。
+	vanished []string
 }
+
+// vanishedRe：tar 走到一個名稱、卻發現它已經不見時說的話（LC_ALL=C 下的原文）。
+var vanishedRe = regexp.MustCompile(`^tar: (.+): (?:File removed before we read it|Cannot (?:stat|open): No such file or directory)$`)
+
+// maxVanished 是記下來的「已經不見的名稱」數量上限。超過的不記：差異備份會因為解釋不了它們而改做完整備份。
+const maxVanished = 100000
 
 func (l *stderrLog) add(line string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// 檔名要原樣留著去和清單比對，所以趕在 plain 之前取。
+	if m := vanishedRe.FindStringSubmatch(line); m != nil && len(l.vanished) < maxVanished {
+		l.vanished = append(l.vanished, m[1])
+	}
 	// 這些行來自 distro 裡，可能帶著檔名；之後會顯示在畫面上、寫進紀錄檔。
 	line = plain(line)
 	if rest, ok := strings.CutPrefix(line, protoPrefix); ok {
@@ -258,7 +271,7 @@ func (req *backupRequest) scriptVars(more ...scriptVar) []scriptVar {
 func (req *backupRequest) kindQuery(backups []*manifest) kindQuery {
 	return kindQuery{
 		Mode: req.Mode, ForceFull: req.ForceFull, FullEvery: req.FullEvery, Verify: req.Verify,
-		Excludes: req.Excludes, Backups: backups, Now: time.Now(),
+		Excludes: req.Excludes, Backups: backups, Now: time.Now().Add(testAge()),
 		ArchiveSize: func(b *manifest) int64 {
 			info, err := os.Stat(b.archivePath())
 			if err != nil {
@@ -301,6 +314,8 @@ type passResult struct {
 	Proto        [][]string
 	Warnings     []string
 	WarningCount int
+	// Vanished 是 tar 走到時已經不見的名稱（tar 的寫法）。
+	Vanished []string
 
 	partial string
 	index   *indexWriter
@@ -492,7 +507,7 @@ func runTarPass(p tarPass) (*passResult, error) {
 	}
 	res.Index, res.ScanErr = idx, scanErr
 	res.Size, res.SHA256 = info.Size(), hex.EncodeToString(sum.Sum(nil))
-	res.Proto = stderr.proto
+	res.Proto, res.Vanished = stderr.proto, stderr.vanished
 	res.WarningCount = len(warnings)
 	res.Warnings = warnings[:min(len(warnings), maxWarnings)]
 	done = true
@@ -574,6 +589,7 @@ func runListing(req *backupRequest) (*listing, distroFacts, clockInfo, error) {
 	list, parseErr := parseSnapshot(stream.Stdout)
 	code, waitErr := stream.Wait()
 	facts := factsFromProto(stderr.proto)
+	facts.Clock += testClockShift()
 	clock.Distro = facts.Clock
 	fail := func(format string, args ...any) (*listing, distroFacts, clockInfo, error) {
 		return nil, facts, clock, fmt.Errorf(format, args...)
@@ -696,7 +712,7 @@ func runFull(req *backupRequest, why *string) (*manifest, error) {
 	if before != nil && res.ScanErr == nil {
 		if after, _, _, err := runListing(req); err != nil {
 			logf("%s: %v; this full backup cannot be the base of a differential", req.Distro.Name, err)
-		} else if sum, err := writeDirs(m.dirsPath(), id, stableDirs(before.list, after, dumped)); err != nil {
+		} else if sum, err := writeDirs(m.dirsPath(), id, before.list, after, dumped); err != nil {
 			logf("%s: record of directories: %v", id, err)
 		} else {
 			m.DirsSHA256 = sum
@@ -731,7 +747,7 @@ func runFull(req *backupRequest, why *string) (*manifest, error) {
 //   - 這次不能做差異：m 是 nil，why 是原因，什麼都沒有留下；呼叫端接著做完整備份。
 //   - 真的失敗了（tar 出錯、磁碟滿了）：回傳 err。
 func runDiff(req *backupRequest, base *manifest) (m *manifest, why, detail string, err error) {
-	baseDirs, err := readDirs(base.dirsPath(), base.DirsSHA256)
+	baseDirs, otherDirs, err := readDirs(base.dirsPath(), base.DirsSHA256)
 	if err != nil {
 		return nil, whyBaseDamaged, err.Error(), nil
 	}
@@ -740,6 +756,10 @@ func runDiff(req *backupRequest, base *manifest) (m *manifest, why, detail strin
 	}
 	list, facts, clock, err := runListing(req)
 	if err != nil {
+		// 同一個目錄走到兩次時清單會不成一棵樹；掛載表看得出原因的話，說那個原因。
+		if len(facts.Mounts.Aliases) > 0 {
+			return nil, whyAlias, fmt.Sprintf("%v; also mounted at %v", err, facts.Mounts.Aliases), nil
+		}
 		return nil, whyListing, err.Error(), nil
 	}
 	if problem := environmentProblem(base, facts); problem != "" {
@@ -750,6 +770,9 @@ func runDiff(req *backupRequest, base *manifest) (m *manifest, why, detail strin
 	began := time.Now()
 	id := newBackupID(req.Dir)
 	x := newExplainer(list, baseDirs, facts.Mounts.Points, base.Since, clock.Distro)
+	for _, ino := range otherDirs {
+		x.baseInos[ino] = true
+	}
 	for _, point := range base.Mounts {
 		x.baseMounts[point] = true
 	}
@@ -772,6 +795,10 @@ func runDiff(req *backupRequest, base *manifest) (m *manifest, why, detail strin
 	}
 	if dropped := res.rows("dropped"); !sameStrings(dropped, base.Dropped) {
 		return give(whySettings, fmt.Sprintf("tar options left out: %v, for the full backup: %v", dropped, base.Dropped))
+	}
+	// 清單之後才被刪掉或改名、tar 走到時已經不見的名稱：它們不必有來源。
+	for _, quoted := range res.Vanished {
+		list.noteGone(quoted)
 	}
 	if err := scanIndex(base.indexPath(), func(e indexEntry) bool {
 		x.sawBaseEntry(e)

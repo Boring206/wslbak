@@ -41,8 +41,9 @@ func backupTime(m *manifest) time.Time {
 // 每週、每月的算法：由新到舊看過去，每遇到一個還沒留過的週（或月）就留下那一週最新的一份，
 // 留滿指定的週數（或月數）為止。沒有備份的週不佔名額。
 //
-// 差異備份要和它的完整備份合起來才還原得出東西，所以只要還有一份被留下的差異依據著某份完整備份，
-// 那份完整備份就一定留下，不管它自己排在第幾。反過來，完整備份不見了的差異不算好的備份。
+// 差異備份要和它的完整備份合起來才還原得出東西，所以只要還有一份被留下的「好的」差異依據著某份
+// 完整備份，那份完整備份就一定留下，不管它自己排在第幾。沒通過檢查而留著查原因的差異不算：
+// 不值得為了它多留一整份完整備份。反過來，完整備份不見了的差異不算好的備份。
 func planRetention(backups []*manifest, pol retention, verify string) []*manifest {
 	if pol.Last < 1 {
 		pol.Last = 1
@@ -51,6 +52,7 @@ func planRetention(backups []*manifest, pol retention, verify string) []*manifes
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID > sorted[j].ID })
 
 	keep := map[*manifest]bool{}
+	var goodOnes []*manifest
 	weeks, months := map[string]bool{}, map[string]bool{}
 	good, bad := 0, 0
 	for _, m := range sorted {
@@ -60,6 +62,7 @@ func planRetention(backups []*manifest, pol retention, verify string) []*manifes
 			}
 			continue
 		}
+		goodOnes = append(goodOnes, m)
 		if good++; good <= pol.Last {
 			keep[m] = true
 		}
@@ -74,8 +77,8 @@ func planRetention(backups []*manifest, pol retention, verify string) []*manifes
 			keep[m] = true
 		}
 	}
-	for _, m := range sorted {
-		if keep[m] && m.isDiff() && m.base != nil {
+	for _, m := range goodOnes {
+		if keep[m] && m.isDiff() {
 			keep[m.base] = true
 		}
 	}

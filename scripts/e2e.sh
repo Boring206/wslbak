@@ -56,8 +56,24 @@ task_exists() { win "$SYS32/schtasks.exe" /Query /TN "$(task_name)" </dev/null >
 task_absent() { ! task_exists; }
 # When PID 1 of a distro started: it changes if the distro is stopped and started again.
 instance_of() { sh_in "$1" 'cut -d" " -f22 /proc/1/stat'; }
+# backups: every archive in the backup folder, without ".tar.gz". newest_backup: the id of
+# the newest full backup (the archive of a differential ends in ".diff.tar.gz").
 backups() { find "$DEST/$DISTRO" -maxdepth 1 -name '*.tar.gz' -printf '%f\n' 2>/dev/null | sed 's/\.tar\.gz$//' | sort; }
 newest_backup() { backups | grep -E '^[0-9]{8}T[0-9]{6}Z$' | tail -n 1; }
+# For the differential checks: the ids of all backups, full and differential, by their
+# manifests; the newest of them; and whether one is a differential.
+restore_points() { find "$DEST/$DISTRO" -maxdepth 1 -name '2???????T??????Z.json' -printf '%f\n' 2>/dev/null | sed 's/\.json$//' | sort; }
+newest_point() { restore_points | tail -n 1; }
+is_diff() { grep -q '"kind": "diff"' "$DEST/$DISTRO/$1.json"; }
+# mutate <step> [NAME=value]: run one step of scripts/e2e-diff-mutate.sh in the test distro
+# and print its last line.
+mutate() {
+	{
+		printf '%s\nSTEP=%s\n' "$NIX_PATH_LINE" "$1"
+		[ -n "${2:-}" ] && printf '%s\n' "$2"
+		cat scripts/e2e-diff-mutate.sh
+	} | win "$WSL" -d "$DISTRO" -u root -e sh -s 2>&1 | no_wsl_notes | tail -n 1
+}
 # Everything in the sandbox, the list of distros and whether the task exists, as one text.
 snapshot() {
 	(cd "$SANDBOX" 2>/dev/null && find . -printf '%p %s\n' | sort)
@@ -957,6 +973,297 @@ else
 	expect_rc 0 "and works with MSYS_NO_PATHCONV=1"
 	expect_has "hostname" "listing the folder"
 fi
+
+section "15c. Differential backups"
+# A full backup now and then, and in between only what changed. What matters most is that
+# a restore from a differential gives exactly the tree that was there, so the tree is
+# changed in every way that could go wrong and the restored copy is compared with it.
+DIFFED="wslbak-e2e-d-$RUN_ID"
+DIFFED_DIR="$SANDBOX_WIN\\diffed"
+extra_distros+=("$DIFFED|$DIFFED_DIR")
+not_registered() { ! registered "$1"; }
+DISTROS_NOW="$(distro_names)"
+# The backups that passed their test restore before this section ("not verified" ends in
+# the same word).
+run list
+EARLIER="$(awk '$NF == "verified" && $(NF - 1) != "not" { print $1 }' <<<"$OUT" | tr '\n' ' ')"
+# A differential asks tar for what changed since five minutes before the full backup. The
+# test cannot wait that long for a file to count as old, so the margin is set to nothing
+# for this section, and the tree is planted a few seconds before the full backup.
+export WSLBAK_TEST_SINCE_MARGIN_SECONDS=0
+WSLENV_BEFORE="${WSLENV:-}"
+export WSLENV="${WSLENV:+$WSLENV:}WSLBAK_TEST_SINCE_MARGIN_SECONDS"
+expect_true "the test tree is planted" [ "$(mutate plant)" = "done plant" ]
+sleep 8
+run config --mode diff --keep 30
+expect_rc 0 "config --mode diff succeeds"
+expect_has "--mode: full → diff" "and shows the change"
+expect_true "the settings file is now in the format that knows differential backups" grep -q '"schema": 2' "$HOME_DIR/config.json"
+run config
+expect_has "Backups: differential (a full one every 30 days" "config shows the mode"
+BEFORE="$(snapshot)"
+run run --dry-run
+expect_has "would make a full backup: there is no full backup yet that a differential can build on" "run --dry-run says the first one will be a full backup, and why"
+same_snapshot "run --dry-run left everything as it was" "$BEFORE"
+run run
+expect_rc 0 "the first run in differential mode succeeds"
+expect_has "A full backup this time: there is no full backup yet that a differential can build on" "it makes a full backup and says why"
+expect_has "test restore passed" "which is test-restored like any full backup"
+BASE="$(newest_point)"
+expect_true "that backup is a full one, with the record of its directories next to it" bash -c '! grep -q "\"kind\": \"diff\"" "$0.json" && [ -f "$0.dirs.gz" ] && [ -f "$0.tar.gz" ]' "$DEST/$DISTRO/$BASE"
+expect_true "nothing was left behind in the distro by the listing" [ -z "$(sh_in "$DISTRO" 'ls /run/wslbak-list.* /dev/shm/wslbak-list.* 2>/dev/null')" ]
+run run --dry-run
+expect_has "would make a differential backup (on the full backup $BASE)" "now run --dry-run announces a differential"
+
+expect_true "the tree is changed in every way a differential has to follow" [ "$(mutate change)" = "done change" ]
+run run
+expect_rc 0 "a run after the changes succeeds"
+expect_has "what changed since the full backup $BASE" "it writes a differential"
+expect_has "test restore passed" "the first differential of a full backup is test-restored together with it"
+D1="$(newest_point)"
+expect_true "the differential has its own kind of archive" [ -f "$DEST/$DISTRO/$D1.diff.tar.gz" ]
+expect_true "and is a fraction of the size of the full backup" [ "$(stat -c %s "$DEST/$DISTRO/$D1.diff.tar.gz")" -lt "$(($(stat -c %s "$DEST/$DISTRO/$BASE.tar.gz") / 4))" ]
+note "full backup $(stat -c %s "$DEST/$DISTRO/$BASE.tar.gz" | numfmt --to=iec), differential $(stat -c %s "$DEST/$DISTRO/$D1.diff.tar.gz" | numfmt --to=iec), in $TOOK s with the merged test restore"
+run list
+expect_true "list tells the two kinds apart" bash -c 'grep -q "^  $1 .* diff " <<<"$0" && grep -q "^  $2 .* full " <<<"$0"' "$OUT" "$D1" "$BASE"
+expect_true "no temporary distro is left registered" [ "$(distro_names)" = "$DISTROS_NOW" ]
+# What the differential holds of the test tree: the changed files and every directory, not
+# the files that stayed as they were.
+run files "$D1" --find keep/unchanged.txt
+expect_rc 0 "the restore point still shows a file that did not change"
+expect_true "but the differential's own archive does not hold it" bash -c '! tar -tzf "$0" | grep -q "keep/unchanged.txt"' "$DEST/$DISTRO/$D1.diff.tar.gz"
+expect_true "while it does hold the edited file" bash -c 'tar -tzf "$0" | grep -q "wslbak-diff/edited.txt"' "$DEST/$DISTRO/$D1.diff.tar.gz"
+
+# The whole distro, restored from the differential, against the source.
+run restore "$D1" --name "$DIFFED" --to "$SANDBOX/diffed" --yes
+expect_rc 0 "restore from a differential succeeds"
+expect_has "is a differential backup; it is restored together with the full backup $BASE" "and says it is put together with its full backup"
+if registered "$DIFFED"; then
+	WANT="$(in_distro "$DISTRO" scripts/e2e-diff-compare.sh)"
+	GOT="$(in_distro "$DIFFED" scripts/e2e-diff-compare.sh)"
+	if [ "$(tail -n 1 <<<"$WANT")" = end ] && [ "$WANT" = "$GOT" ]; then
+		ok "the restored copy has exactly the changed tree: names, types, sizes, modes, owners, times, hard links, attributes and contents ($(wc -l <<<"$WANT") lines compared)"
+	else
+		bad "the restored copy differs from the source" "$(diff <(echo "$WANT") <(echo "$GOT") | head -n 20)"
+	fi
+	if [ "$(in_distro "$DISTRO" scripts/e2e-compare.sh)" = "$(in_distro "$DIFFED" scripts/e2e-compare.sh)" ]; then
+		ok "and so has everything that did not change (/usr and the files of the other checks)"
+	else
+		bad "what did not change differs in the restored copy" "$(diff <(in_distro "$DISTRO" scripts/e2e-compare.sh) <(in_distro "$DIFFED" scripts/e2e-compare.sh) | head -n 12)"
+	fi
+	wsl_exe --terminate "$DIFFED" </dev/null >/dev/null 2>&1
+else
+	bad "the distro restored from a differential is not registered"
+fi
+unregister_guarded "$DIFFED" "$DIFFED_DIR" 2>/dev/null
+
+# Looking inside a differential restore point, and taking files out of it.
+run files "$D1" /wslbak-diff
+expect_rc 0 "files lists a folder of a differential restore point"
+expect_has "added.txt" "with a file that only the differential has"
+expect_has "hard-a" "and one that only the full backup has"
+expect_lacks "deleted.txt" "but not the file that was deleted in between"
+expect_lacks "renamed-from.txt" "nor the old name of the renamed one"
+run files "$D1" --find deleted.txt
+expect_rc 1 "files --find does not find the deleted file either"
+run files "$BASE" --find deleted.txt
+expect_rc 0 "while the full backup still has it"
+run restore "$D1" --path /wslbak-diff/keep --path /wslbak-diff/edited.txt --path /wslbak-diff/hard-c --into /root/diff-back --yes
+expect_rc 0 "restore --path takes files from both halves of a differential restore point"
+expect_true "the unchanged file came from the full backup, with its time" [ "$(sh_in "$DISTRO" 'cat /root/diff-back/wslbak-diff/keep/unchanged.txt; stat -c %Y /root/diff-back/wslbak-diff/keep/unchanged.txt' | tr '\n' ' ')" = "never touched 1580702706 " ]
+expect_true "the edited file came from the differential" [ "$(sh_in "$DISTRO" 'tail -n 1 /root/diff-back/wslbak-diff/edited.txt')" = more ]
+expect_true "a directory taken from the differential keeps its mode and owner" [ "$(sh_in "$DISTRO" 'stat -c "%a %u:%g" /root/diff-back/wslbak-diff/keep/sub')" = "750 4321:8765" ]
+# Which of the three names is stored as the file and which as links to it is up to tar. If
+# hard-c is a link, the file it points to has to come along; either way the names that came
+# back are one file.
+expect_true "a hard link comes with the file it belongs to" [ "$(sh_in "$DISTRO" 'cd /root/diff-back/wslbak-diff && cat hard-c && [ "$(stat -c %h hard-c)" = "$(ls | grep -c "^hard-")" ] && echo together')" = "$(printf 'linked\ntogether')" ]
+sh_in "$DISTRO" 'rm -rf /root/diff-back' >/dev/null
+
+# The second differential of the same full backup gets the light check; verify always does
+# the real thing.
+mutate tick >/dev/null
+run run
+expect_rc 0 "a second differential succeeds"
+expect_has "check passed: the archive is intact and its full backup is in place" "it is checked without importing the whole distro again"
+expect_lacks "Test restore" "no test restore this time"
+D2="$(newest_point)"
+run list
+expect_true "list shows it as checked" grep -q "^  $D2 .* diff .* checked" <<<"$OUT"
+run status
+expect_rc 0 "status counts a checked differential as a success"
+expect_has "Differential backups: on; the last backup was a differential." "and says that the last backup was a differential"
+run verify "$D2"
+expect_rc 0 "verify test-restores a differential together with its full backup"
+expect_has "test restore passed" "and it passes"
+run list
+expect_true "after which list shows it as verified" grep -q "^  $D2 .* diff .* verified" <<<"$OUT"
+
+# A busy distro: files that were in the listing and are gone by the time tar gets to them,
+# and files that appear in between, are no reason for a full backup.
+sh_in "$DISTRO" '
+mkdir -p /root/churn
+cat > /root/churn-long.sh <<"CHURN"
+i=0
+while [ $i -lt 400000 ]; do
+	echo $i > /root/churn/g$((i % 40))
+	rm -f /root/churn/g$(((i + 20) % 40))
+	i=$((i + 1))
+done
+CHURN
+setsid nohup sh /root/churn-long.sh >/dev/null 2>&1 &
+sleep 1
+' >/dev/null
+expect_true "files in the distro are being created and deleted" [ -n "$(sh_in "$DISTRO" 'pgrep -f churn-long.sh || ls /root/churn | grep -m 1 "^g"')" ]
+run run
+expect_rc 0 "a differential succeeds while files come and go"
+expect_has "what changed since the full backup $BASE" "and it is still a differential, not a full backup"
+BUSY="$(newest_point)"
+sh_in "$DISTRO" 'pkill -f churn-long.sh; rm -f /root/churn-long.sh /root/churn/g*' >/dev/null 2>&1
+
+# Retention: a full backup stays for as long as a kept differential needs it.
+run config --keep 2
+mutate tick >/dev/null
+run run
+expect_rc 0 "another differential succeeds, with only two backups to keep"
+D3="$(newest_point)"
+expect_true "the two newest restore points are kept" [ -f "$DEST/$DISTRO/$BUSY.diff.tar.gz" -a -f "$DEST/$DISTRO/$D3.diff.tar.gz" ]
+expect_true "their full backup is kept as well, although it is the third" [ -f "$DEST/$DISTRO/$BASE.tar.gz" -a -f "$DEST/$DISTRO/$BASE.json" -a -f "$DEST/$DISTRO/$BASE.dirs.gz" ]
+expect_true "the oldest differential is gone, with its manifest and index" [ ! -e "$DEST/$DISTRO/$D1.diff.tar.gz" -a ! -e "$DEST/$DISTRO/$D1.json" -a ! -e "$DEST/$DISTRO/$D1.idx.gz" ]
+LEFT=""
+for id in $EARLIER; do
+	[ -e "$DEST/$DISTRO/$id.tar.gz" ] && LEFT="$LEFT $id"
+done
+if [ -n "$EARLIER" ] && [ -z "$LEFT" ]; then
+	ok "and so are the full backups from before, which nothing needs"
+else
+	bad "the full backups from before ($EARLIER) should be gone" "still there:$LEFT"$'\n'"$OUT"
+fi
+
+# When a differential would not be right, a full backup is made instead, and the reason is
+# given. The test restores are switched off for these: what is checked is the decision.
+run config --verify none --keep 4
+full_because() { # full_because <words of the reason> <label>
+	expect_rc 0 "$2: the run succeeds"
+	expect_has "A full backup this time: $1" "$2: a full backup is made, with the reason"
+	expect_true "$2: the newest backup is a full one" bash -c '! grep -q "\"kind\": \"diff\"" "$0"' "$DEST/$DISTRO/$(newest_point).json"
+}
+mutate rename >/dev/null
+run run
+full_because "a folder was renamed or moved" "an old folder was renamed"
+run status
+expect_has "Differential backups: on; the last backup was a full one, because a folder was renamed or moved" "status says why the last backup was a full one"
+mutate tick >/dev/null
+run run
+expect_has "what changed since the full backup" "after that full backup, differentials go on"
+mutate swap >/dev/null
+run run
+full_because "a folder was renamed or moved" "two folders changed places"
+run run --full
+full_because "--full was given" "run --full"
+run config --exclude /wslbak-diff/keep/sub
+run run
+full_because "the exclude list or the distro's tar is not what it was" "another exclude list"
+run config --unexclude /wslbak-diff/keep/sub
+run run
+full_because "the exclude list or the distro's tar is not what it was" "the exclude list changed back"
+run config --full-every 2
+run_with WSLBAK_TEST_AGE_HOURS=47 -- run
+expect_has "what changed since the full backup" "a full backup of almost two days is still built on with --full-every 2"
+run_with WSLBAK_TEST_AGE_HOURS=49 -- run
+full_because "the last full backup is older than the configured number of days" "the full backup is past --full-every"
+run config --full-every 30
+run_with WSLBAK_TEST_CLOCK_SHIFT_SECONDS=-100000 -- run
+full_because "the clock does not fit the last full backup" "the distro's clock is earlier than at the full backup"
+# One folder mounted at a second place: the same files would be seen twice.
+sh_in "$DISTRO" 'mkdir -p /wslbak-diff-alias; setsid nohup sleep 300 >/dev/null 2>&1 & sleep 1; mount --bind /wslbak-diff/keep /wslbak-diff-alias' >/dev/null
+if [ "$(sh_in "$DISTRO" 'cat /wslbak-diff-alias/unchanged.txt 2>/dev/null')" = "never touched" ]; then
+	run run
+	full_because "a folder of the distro is mounted at a second place inside it" "a folder is mounted at a second place"
+else
+	skip "could not mount a folder at a second place in the test distro"
+fi
+sh_in "$DISTRO" 'umount /wslbak-diff-alias 2>/dev/null; rmdir /wslbak-diff-alias; pkill -x sleep' >/dev/null 2>&1
+run run
+BASE="$(newest_backup)"
+# A differential that grew past half of its full backup is the last one on that full backup.
+mutate big "BIG_BYTES=$(($(stat -c %s "$DEST/$DISTRO/$BASE.tar.gz") * 6 / 10))" >/dev/null
+run run
+expect_has "what changed since the full backup $BASE" "a large change still goes into a differential"
+run run
+full_because "the last differential had grown to more than half the size of the full backup" "the last differential was large"
+sh_in "$DISTRO" 'rm -f /wslbak-diff/big.bin' >/dev/null
+# The record of directories of the full backup is gone: nothing can be built on it any more.
+run run
+BASE="$(newest_backup)"
+mv "$DEST/$DISTRO/$BASE.dirs.gz" "$SANDBOX/dirs.aside"
+run run
+full_because "the files of the last full backup are missing or have changed" "the record of directories of the full backup is gone"
+BASE="$(newest_backup)"
+
+# With test restores switched on again, a full backup that never had one is not built on.
+run config --verify restore
+run run
+full_because "the last full backup did not pass its test restore" "the full backup was never test-restored"
+# A damaged differential is caught, and the next backup is a full one.
+mutate tick >/dev/null
+run run
+expect_has "what changed since the full backup" "a differential is made on the new full backup"
+expect_has "test restore passed" "and test-restored with it"
+DAMAGED="$(newest_point)"
+ARCHIVE="$DEST/$DISTRO/$DAMAGED.diff.tar.gz"
+printf 'XXXX' | dd of="$ARCHIVE" bs=1 seek=$(($(stat -c %s "$ARCHIVE") / 2)) conv=notrunc 2>/dev/null
+run verify "$DAMAGED"
+expect_rc 2 "verify fails for a differential with four bytes overwritten"
+run restore "$DAMAGED" --name "$DIFFED" --to "$SANDBOX/diffed" --yes
+expect_rc 2 "restore refuses it"
+expect_true "and creates no distro" not_registered "$DIFFED"
+run run
+full_because "the last differential did not pass its check" "the last differential failed"
+BASE="$(newest_backup)"
+# The full backup of a differential is damaged: the differential cannot be restored either.
+mutate tick >/dev/null
+run run
+ORPHAN="$(newest_point)"
+expect_true "a differential exists on the new full backup" is_diff "$ORPHAN"
+printf 'XXXX' | dd of="$DEST/$DISTRO/$BASE.tar.gz" bs=1 seek=$(($(stat -c %s "$DEST/$DISTRO/$BASE.tar.gz") / 2)) conv=notrunc 2>/dev/null
+run verify "$ORPHAN"
+expect_rc 2 "verify of a differential fails when its full backup is damaged"
+run restore "$ORPHAN" --name "$DIFFED" --to "$SANDBOX/diffed" --yes
+expect_rc 2 "and restore refuses"
+expect_true "without creating a distro" not_registered "$DIFFED"
+# The full backup is gone altogether.
+rm -f "${DEST:?}/${DISTRO:?}/${BASE:?}.tar.gz" "${DEST:?}/${DISTRO:?}/${BASE:?}.json" "${DEST:?}/${DISTRO:?}/${BASE:?}.idx.gz" "${DEST:?}/${DISTRO:?}/${BASE:?}.dirs.gz"
+run list
+expect_true "list says the differential has lost its full backup" grep -q "^  $ORPHAN .* diff .* full backup missing" <<<"$OUT"
+run restore "$ORPHAN" --dry-run
+expect_rc 2 "restore says why it cannot use it"
+expect_has "the full backup $BASE it was made from is missing" "naming the full backup"
+run files "$ORPHAN" /
+expect_rc 2 "files refuses it as well"
+
+# Back to a full backup every time, as the rest of the suite expects.
+run config --mode full --keep 2
+expect_rc 0 "config --mode full succeeds"
+expect_true "the settings file is back in the format 0.1.x reads" grep -q '"schema": 1' "$HOME_DIR/config.json"
+expect_true "the test tree is removed" [ "$(mutate clean)" = "done clean" ]
+run run
+expect_rc 0 "a run in full mode succeeds"
+expect_lacks "A full backup this time" "without any talk of differentials"
+expect_true "with no record of directories" [ ! -e "$DEST/$DISTRO/$(newest_backup).dirs.gz" ]
+run run
+expect_rc 0 "and another"
+FULLS="$(restore_points | tail -n 2 | tr '\n' ' ')"
+# Backups that failed their check are kept apart, the newest two, to be looked into.
+expect_true "what is left: the two differentials that failed, and the two new full backups" [ "$(restore_points | tr '\n' ' ')" = "$DAMAGED $ORPHAN $FULLS" ]
+expect_true "no full backup was kept for the sake of a differential that failed" [ -z "$(find "$DEST/$DISTRO" -name '*.dirs.gz')" ]
+expect_true "no partial file is left" [ -z "$(find "$DEST/$DISTRO" -name '*.partial')" ]
+# The rest of the suite expects a folder without those two.
+for id in "$DAMAGED" "$ORPHAN"; do
+	rm -f "${DEST:?}/${DISTRO:?}/${id:?}.diff.tar.gz" "${DEST:?}/${DISTRO:?}/${id:?}.json" "${DEST:?}/${DISTRO:?}/${id:?}.idx.gz"
+done
+rm -f "${SANDBOX:?}/dirs.aside"
+unset WSLBAK_TEST_SINCE_MARGIN_SECONDS
+export WSLENV="$WSLENV_BEFORE"
 
 section "16. uninstall"
 BEFORE="$(snapshot)"
