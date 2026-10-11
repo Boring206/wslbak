@@ -499,7 +499,7 @@ the last 20 hours.
   before wslbak had started. The freezing is put down to those machines, not to wslbak: of 54
   machines of the same kind that only set WSL up, with no wslbak on them, one froze as well, while
   108 machines that switched Defender on and did not use WSL all kept running. With 0.2.0 the suite
-  has run there twice more and passed both times. The arm64 executables
+  has run there three more times and passed each time. The arm64 executables
   start and pass the unit tests on arm64 Windows, where no WSL was available to back up. Not tried
   yet: Windows 10 itself, a PC with Docker Desktop, and distros of 100 GB or more; reports are
   welcome.
