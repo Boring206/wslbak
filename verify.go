@@ -58,9 +58,11 @@ type checkReport struct {
 	User          string // ok、missing、no-home；沒有檢查時是空的
 	SamplesOK     int
 	SamplesBad    int
-	SizesOK       int
-	SizesBad      int
-	BadLines      []string
+	// SamplesSkipped 是內容不同、但屬於「WSL 啟動 distro 時自己改寫」的檔案數（主機名稱那幾個）。
+	SamplesSkipped int
+	SizesOK        int
+	SizesBad       int
+	BadLines       []string
 }
 
 func parseCheck(text string) checkReport {
@@ -90,6 +92,9 @@ func parseCheck(text string) checkReport {
 				r.SamplesOK, _ = strconv.Atoi(row[1])
 				r.SamplesBad, _ = strconv.Atoi(row[2])
 			}
+			if len(row) > 3 {
+				r.SamplesSkipped, _ = strconv.Atoi(row[3])
+			}
 		case "sample-bad":
 			r.BadLines = append(r.BadLines, strings.Join(row[1:], " "))
 		case "sizes":
@@ -111,6 +116,10 @@ func (r checkReport) inert() bool {
 		r.WSLConf == hex.EncodeToString(want[:])
 }
 
+// maxRewritten 是檢查腳本最多可以略過幾個內容不同的抽樣檔案：WSL 啟動 distro 時自己改寫的
+// /etc/hostname、/etc/hosts、/etc/resolv.conf（或它們指向的檔案），見 check.sh。
+const maxRewritten = 3
+
 // judgeCheck 依檢查腳本的結果下結論；通過時 reason 是空字串。
 func judgeCheck(r checkReport, samples, sizes int) (reason, detail string) {
 	switch {
@@ -121,7 +130,7 @@ func judgeCheck(r checkReport, samples, sizes int) (reason, detail string) {
 			r.PID1, r.Systemd, r.WindowsDrives, r.Interop, r.WSLConf)
 	case r.User == "missing" || r.User == "no-home":
 		return reasonUser, "default user: " + r.User
-	case r.SamplesBad > 0 || r.SamplesOK != samples:
+	case r.SamplesBad > 0 || r.SamplesSkipped < 0 || r.SamplesSkipped > maxRewritten || r.SamplesOK+r.SamplesSkipped != samples:
 		return reasonSamples, fmt.Sprintf("%d of %d files match; %s", r.SamplesOK, samples, strings.Join(r.BadLines, "; "))
 	case r.SizesBad > 0 || r.SizesOK != sizes:
 		return reasonSamples, fmt.Sprintf("%d of the %d largest files have the right size; %s", r.SizesOK, sizes, strings.Join(r.BadLines, "; "))

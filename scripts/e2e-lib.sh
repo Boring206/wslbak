@@ -64,8 +64,18 @@ run_with() {
 	OUT="$(env "${pairs[@]}" WSLENV="${WSLENV:+$WSLENV:}$names" timeout "${RUN_LIMIT:-600}" "${WB[@]}" "$@" 2>&1 </dev/null | tr -d '\r'; exit "${PIPESTATUS[0]}")"
 	RC=$?
 }
+# verify_detail: when the output says that a test restore failed, the line of wslbak's own
+# log that names what it tripped over (the program only prints the reason).
+verify_detail() {
+	local line
+	grep -q 'test restore failed' <<<"$OUT" || return 0
+	[ -f "$HOME_DIR/wslbak.log" ] || return 0
+	line="$(grep -a 'verify .*: ok=false' "$HOME_DIR/wslbak.log" | tail -n 1 | tr -d '\r')"
+	[ -n "$line" ] && printf '\nlog: %s' "$line"
+	return 0
+}
 expect_rc() {
-	if [ "$RC" = "$1" ]; then ok "$2"; else bad "$2 (exit code $RC, expected $1)" "$OUT"; fi
+	if [ "$RC" = "$1" ]; then ok "$2"; else bad "$2 (exit code $RC, expected $1)" "$OUT$(verify_detail)"; fi
 }
 expect_has() {
 	if grep -qF -- "$1" <<<"$OUT"; then ok "$2"; else bad "$2 (output lacks \"$1\")" "$OUT"; fi

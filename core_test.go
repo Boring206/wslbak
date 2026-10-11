@@ -233,6 +233,12 @@ func TestParseAndJudgeCheck(t *testing.T) {
 		{"the home directory is gone", swap("user\tok", "user\tno-home"), reasonUser},
 		{"a file differs", swap("samples\t3\t0", "samples\t2\t1"), reasonSamples},
 		{"fewer files were checked than recorded", swap("samples\t3\t0", "samples\t2\t0"), reasonSamples},
+		// WSL 啟動複本時自己改寫的檔案（主機名稱）內容不同，不算還原出了問題。
+		{"a file that WSL rewrote differs", swap("samples\t3\t0", "samples\t2\t0\t1"), ""},
+		{"a rewritten file does not make up for a missing one", swap("samples\t3\t0", "samples\t1\t0\t1"), reasonSamples},
+		{"nor for one that really differs", swap("samples\t3\t0", "samples\t1\t1\t1"), reasonSamples},
+		{"more rewritten files than WSL rewrites", swap("samples\t3\t0", "samples\t-1\t0\t4"), reasonSamples},
+		{"a negative count of rewritten files", swap("samples\t3\t0", "samples\t4\t0\t-1"), reasonSamples},
 		{"empty output", parseCheck(""), reasonCheck},
 	}
 	for _, c := range cases {

@@ -666,7 +666,13 @@ if [ -n "$HOOK_PORT" ] && win "$SYS32/curl.exe" -s -m 5 -o NUL "http://localhost
 	# been going for 30 hours.
 	: >"$HOOK_LOG"
 	ensure_interop
-	env WSLBAK_TEST_READ_MIB_PER_SECOND=4 WSLENV="${WSLENV:+$WSLENV:}WSLBAK_TEST_READ_MIB_PER_SECOND" \
+	# At 4 MiB a second the run holds the lock for a minute or two on the distros this suite
+	# usually runs against. A distro of more than 1.5 GiB would not be through within the
+	# time limit (NixOS as it comes is over 2 GiB), so there the speed is set for two minutes.
+	SLOW_MIB=4
+	TAR_MIB="$(node -e 'console.log(Math.ceil(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).index.size / 1048576))' "$DEST/$DISTRO/$(newest_backup).json" 2>/dev/null)"
+	[ "${TAR_MIB:-0}" -gt 1536 ] && SLOW_MIB=$((TAR_MIB / 120))
+	env WSLBAK_TEST_READ_MIB_PER_SECOND="$SLOW_MIB" WSLENV="${WSLENV:+$WSLENV:}WSLBAK_TEST_READ_MIB_PER_SECOND" \
 		timeout 600 "${WB[@]}" run --no-verify >"$SANDBOX/long.log" 2>&1 </dev/null &
 	LONG_PID=$!
 	for _ in $(seq 1 300); do
@@ -1097,6 +1103,35 @@ expect_rc 0 "verify test-restores a differential together with its full backup"
 expect_has "test restore passed" "and it passes"
 run list
 expect_true "after which list shows it as verified" grep -q "^  $D2 .* diff .* verified" <<<"$OUT"
+
+# WSL writes the host name into /etc/hostname every time it starts a distro, and so it does
+# in the copy that a test restore makes. There the name is the PC's, because the copy does
+# not get the hostname setting of the distro's wsl.conf. Where /etc/hostname is a symbolic
+# link (NixOS keeps the file in /nix/store), it is the file behind the link that changes,
+# and that file is compared like any other. Neither is a sign of a bad restore. Here the
+# file gets a content of its own, behind a link, as on a distro with its own host name; a
+# differential holds it, because it changed, and compares every file it holds.
+HOSTNAME_KIND="$(sh_in "$DISTRO" '
+cd /etc || exit 1
+if [ -L hostname ]; then
+	echo link
+else
+	[ -e hostname ] && mv hostname hostname.e2e-was
+	echo e2e-other-name >hostname.e2e-target
+	ln -s hostname.e2e-target hostname
+	echo file
+fi' | tail -n 1)"
+run run
+expect_rc 0 "a differential succeeds after the host name file changed"
+HN="$(newest_point)"
+expect_true "and it is a differential" is_diff "$HN"
+if [ "$HOSTNAME_KIND" = file ]; then
+	expect_true "the file behind /etc/hostname is among the files that get compared" grep -q 'hostname\.e2e-target' "$DEST/$DISTRO/$HN.json"
+fi
+run verify "$HN"
+expect_rc 0 "a file that WSL writes in the copy does not fail the test restore"
+expect_has "test restore passed" "which passes"
+sh_in "$DISTRO" 'cd /etc && [ -e hostname.e2e-target ] && { rm -f hostname hostname.e2e-target; [ -e hostname.e2e-was ] && mv hostname.e2e-was hostname; }' >/dev/null
 
 # A busy distro: files that were in the listing and are gone by the time tar gets to them,
 # and files that appear in between, are no reason for a full backup.

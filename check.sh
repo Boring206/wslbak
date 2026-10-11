@@ -12,6 +12,19 @@ say() {
 	printf '@wslbak\t%s\n' "$1"
 }
 
+# rewritten 回報一個路徑（「./」開頭）是不是 WSL 啟動 distro 時自己改寫的檔案（見下面的 volatile）。
+rewritten() {
+	[ -n "$1" ] || return 1
+	case "
+$volatile
+" in
+	*"
+$1
+"*) return 0 ;;
+	esac
+	return 1
+}
+
 main() {
 	# NixOS 的工具不在一般的位置。/run/current-system 是開機時才建立的，
 	# 這份複本沒有開過機，所以也從磁碟上的系統設定檔去找。
@@ -64,21 +77,39 @@ main() {
 	fi
 
 	cd / || exit 4
+	# WSL 每次啟動 distro 都把主機名稱寫進 /etc/hostname，這份複本也一樣；寫進去的是這台電腦的名稱，
+	# 因為原本 wsl.conf 裡的 hostname 設定沒有帶過來。/etc/hosts 與 /etc/resolv.conf 在這份複本裡
+	# 已經關掉不重寫，列著只是保險。這幾個名稱本身不會被抽樣；但它們是符號連結時（NixOS 把
+	# /etc/hostname 連進 /nix/store），被改寫的是連結指向的那個檔案，而那個檔案可能被抽到。
+	# 這裡找出它們在這份複本裡真正的位置：那些檔案內容不同，不代表還原出了問題。
+	volatile=
+	for f in /etc/hostname /etc/hosts /etc/resolv.conf; do
+		real=$(readlink -f "$f" 2>/dev/null)
+		if [ -n "$real" ]; then
+			volatile="$volatile
+.$real"
+		fi
+	done
 	if [ -n "$WSLBAK_SAMPLES" ]; then
 		# 不用 --quiet：busybox 的 sha256sum 沒有這個選項。
 		printf '%s\n' "$WSLBAK_SAMPLES" | sha256sum -c 2>/dev/null | {
 			ok=0
 			bad=0
+			skipped=0
 			while IFS= read -r line; do
 				case $line in
 				*": OK") ok=$((ok + 1)) ;;
 				*)
-					bad=$((bad + 1))
-					[ "$bad" -le 20 ] && say "sample-bad	$line"
+					if rewritten "${line%%: FAILED*}"; then
+						skipped=$((skipped + 1))
+					else
+						bad=$((bad + 1))
+						[ "$bad" -le 20 ] && say "sample-bad	$line"
+					fi
 					;;
 				esac
 			done
-			say "samples	$ok	$bad"
+			say "samples	$ok	$bad	$skipped"
 		}
 	fi
 	if [ -n "$WSLBAK_SIZES" ]; then

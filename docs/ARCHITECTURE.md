@@ -83,6 +83,17 @@ files have their recorded hashes, do the largest files have their recorded sizes
 fence.go unregisters the temporary distro and deletes its folder
 ```
 
+Files that WSL writes whenever it starts a distro are not sampled (`volatilePaths` in tarscan.go:
+the host name, hosts, resolv.conf and ld.so.cache, and the two settings files that are replaced in
+the copy). The copy starts without the distro's own `wsl.conf`, so WSL writes the PC's name into
+its `/etc/hostname`, not the name the distro asked for. Where that path is a symbolic link (NixOS
+keeps the file in `/nix/store`), it is the file behind the link that changes, and only the copy can
+tell which file that is. check.sh therefore resolves `/etc/hostname`, `/etc/hosts` and
+`/etc/resolv.conf` in the copy and reports a sampled file that differs there as skipped, not as
+bad; `judgeCheck` accepts at most three of those. A differential samples every file it holds when
+there are fewer than 512, and the host name file is in it whenever the distro was started since the
+full backup, so without this every such test restore of a distro with its own host name failed.
+
 A differential restore point is test-restored as it would be restored: merged with its full
 backup into one stream (see below), then the same appended settings and the same check, with the
 samples of both. That happens for the first differential of a full backup and when the last such

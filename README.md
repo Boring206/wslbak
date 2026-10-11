@@ -266,9 +266,10 @@ differential does not affect another. `wslbak config --mode full` switches back.
 
 How much smaller a differential is depends on how much changes between two backups. In the
 end-to-end test on the development PC, the full backup of a freshly installed Debian with the test
-files is 182 MB, and the differential made after the test had edited, added, renamed and deleted a
-few dozen files is 582 KB. A run in this mode first lists every file of the distro without reading
-any of them; with two million files that took 13 seconds.
+files is 186 MB, and the differential made after the test had edited, added, renamed and deleted a
+few dozen files is 555 KB. A run in this mode first lists every file of the distro without reading
+any of them; with two million files that took 14 seconds, and the differential made there after
+three small changes is 100 KB, next to a full backup of 88 MB.
 
 - **How long a full backup is built on.** 30 days, or what you give with `--full-every <days>`; the
   backup after that is a full one. `wslbak run --full` makes a full backup at any time. A
@@ -332,6 +333,13 @@ copy that boots would start a second set of your services and scheduled jobs, wi
 wslbak therefore appends its own `/etc/wsl.conf` to the end of the stream it imports (the archive on
 disk is not altered) that turns off systemd, boot commands, Windows drive mounts and interop, and it
 refuses to start the copy unless that file is the one that ended up in place.
+
+Six files are left out of the comparison: `/etc/hostname`, `/etc/hosts`, `/etc/resolv.conf` and
+`/etc/ld.so.cache`, which WSL writes itself when it starts a distro, and `/etc/wsl.conf` and
+`/etc/wsl-distribution.conf`, which wslbak replaces in the copy. WSL writes the host name into the
+copy as well, and there it is the PC's name, whatever the distro's own `wsl.conf` asks for. Where
+`/etc/hostname`, `/etc/hosts` or `/etc/resolv.conf` is a symbolic link (NixOS keeps `/etc/hostname`
+in `/nix/store`), the file behind the link may differ too without the test restore failing.
 
 WSL makes a Start Menu folder for every distro it imports and does not always take it away again;
 wslbak removes the empty one that its temporary distro leaves behind.
@@ -477,7 +485,11 @@ the last 20 hours.
   Oracle Linux 7, 8 and 9, Arch Linux, openSUSE Tumbleweed, Kali, Gentoo, NixOS and Alpine 3.24
   (GNU tar 1.26 to 1.35); with WSL 2.7 and 3.0; on Windows 11 (build 26300), Windows Server 2025
   (build 26100) and Windows Server 2022 (build 20348, the generation of Windows 10); and with
-  Avast and with Microsoft Defender's real-time protection switched on, each with a caveat. With
+  Avast and with Microsoft Defender's real-time protection switched on, each with a caveat. The
+  checks of differential backups came with 0.2.0 and have run against nine of those distros
+  (Debian 13, Ubuntu 22.04, Fedora 44, AlmaLinux 8, Oracle Linux 7, Arch Linux, openSUSE
+  Tumbleweed, NixOS and Alpine 3.24; GNU tar 1.26, 1.30, 1.34 and 1.35), with both versions of WSL
+  and on all three versions of Windows; the other distros were last tested with 0.1.x. With
   Avast the suite has passed many times, but see under [Troubleshooting](#troubleshooting) what its
   sandbox did. Defender is switched on in the middle of a job on GitHub's test machines, which
   otherwise run without it. Of 65 such runs of the suite, 59 passed; in one, a scheduled backup was

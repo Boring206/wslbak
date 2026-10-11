@@ -52,6 +52,7 @@ func sampleEntries() []testEntry {
 		{name: "./etc/", kind: tar.TypeDir},
 		{name: "./etc/passwd", kind: tar.TypeReg, body: "root:x:0:0:root:/root:/bin/sh\n"},
 		{name: "./etc/wsl.conf", kind: tar.TypeReg, body: "[boot]\nsystemd=true\n"},
+		{name: "./etc/hostname", kind: tar.TypeReg, body: "my-distro\n"},
 		{name: "./etc/empty", kind: tar.TypeReg},
 		{name: "./bin", kind: tar.TypeSymlink, link: "usr/bin"},
 		{name: "./home/user/中文 檔名.txt", kind: tar.TypeReg, body: "內容"},
@@ -94,8 +95,8 @@ func TestScanTar(t *testing.T) {
 	if _, ok := got["./zeros"]; !ok {
 		t.Error("./zeros should be sampled")
 	}
-	// 不取樣的：會被覆寫的設定檔、空檔、太大的檔、檔名要跳脫的檔、不是一般檔案的項目。
-	for _, name := range []string{"./etc/wsl.conf", "./etc/empty", "./big", "./home/user/back\\slash", "./bin", "./etc/"} {
+	// 不取樣的：會被覆寫的設定檔、WSL 每次啟動都重寫的主機名稱、空檔、太大的檔、檔名要跳脫的檔、不是一般檔案的項目。
+	for _, name := range []string{"./etc/wsl.conf", "./etc/hostname", "./etc/empty", "./big", "./home/user/back\\slash", "./bin", "./etc/"} {
 		if _, ok := got[name]; ok {
 			t.Errorf("%s should not be sampled", name)
 		}

@@ -103,9 +103,13 @@ func plainName(name string) bool {
 }
 
 // volatilePaths 是 WSL 在 distro 啟動時會自己改寫的檔案，以及試還原時被我們覆寫的檔案。
+// /etc/hostname 每次啟動都會被寫一次；試還原的複本不帶原本 wsl.conf 的 hostname 設定，
+// 寫進去的是這台電腦的名稱，和備份裡的不一定相同。這些名稱是符號連結時，被改寫的是連結指向的檔案，
+// 那只有在還原出來的複本裡才認得出來，由檢查腳本處理（check.sh 的 volatile）。
 var volatilePaths = map[string]bool{
 	"./etc/wsl.conf":              true,
 	"./etc/wsl-distribution.conf": true,
+	"./etc/hostname":              true,
 	"./etc/hosts":                 true,
 	"./etc/resolv.conf":           true,
 	"./etc/ld.so.cache":           true,

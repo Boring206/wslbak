@@ -232,8 +232,9 @@ wslbak config --mode diff
 `wslbak config --mode full` 可以改回來。
 
 差異比完整備份小多少，要看兩次備份之間變了多少。在開發用的電腦上跑端對端測試時，一個剛裝好、放了測試檔案的 Debian，
-完整備份是 182 MB；測試改動、新增、改名、刪除幾十個檔案之後做的差異是 582 KB。
-這個模式下，每次備份會先把 distro 裡的檔案列一遍（不讀內容）；兩百萬個檔案花了 13 秒。
+完整備份是 186 MB；測試改動、新增、改名、刪除幾十個檔案之後做的差異是 555 KB。
+這個模式下，每次備份會先把 distro 裡的檔案列一遍（不讀內容）；兩百萬個檔案花了 14 秒，
+在那個 distro 上改了三個小地方之後做的差異是 100 KB，它的完整備份是 88 MB。
 
 - **一份完整備份用多久。** 30 天，或你用 `--full-every <天數>` 給的天數；之後的下一次備份會重新做一份完整的。
   `wslbak run --full` 隨時可以做一份完整備份。差異長到超過完整備份的一半時，下一次也會改做完整的。
@@ -279,6 +280,12 @@ wslbak config --mode diff
 就會多跑一套你的服務與排程工作，還帶著你的憑證。所以 wslbak 在送去匯入的資料流結尾接上自己的
 `/etc/wsl.conf`（磁碟上的備份檔不會被改動），關掉 systemd、開機指令、Windows 磁碟的掛載與互通；
 而且除非確認最後留下來的是這一份設定，否則不會啟動複本。
+
+有六個檔案不列入比對：`/etc/hostname`、`/etc/hosts`、`/etc/resolv.conf` 與 `/etc/ld.so.cache` 是 WSL
+每次啟動 distro 時自己寫的；`/etc/wsl.conf` 與 `/etc/wsl-distribution.conf` 在複本裡被 wslbak 換掉。
+WSL 啟動複本時同樣會寫入主機名稱，而且寫的是這台電腦的名稱，不管 distro 自己的 `wsl.conf` 怎麼設定。
+`/etc/hostname`、`/etc/hosts` 或 `/etc/resolv.conf` 是符號連結時（NixOS 把 `/etc/hostname` 放在
+`/nix/store` 裡），連結指向的那個檔案內容不同，也不算試還原失敗。
 
 WSL 會替每個匯入的 distro 在開始功能表建立一個資料夾，之後不一定收走；
 暫時的 distro 留下的那個空資料夾，wslbak 會自己清掉。
@@ -391,6 +398,9 @@ wslbak 把真正的大小也寫進那個標頭（標頭的檢查碼跟著更正�
   Fedora 44、AlmaLinux 8 與 9、Rocky Linux 9（`wsl --install` 提供的 CIQ 版本）、Oracle Linux 7／8／9、Arch Linux、openSUSE Tumbleweed、Kali、Gentoo、
   NixOS、Alpine 3.24（GNU tar 1.26 到 1.35）；WSL 2.7 與 3.0；Windows 11（組建 26300）、Windows Server 2025（組建 26100）
   與 Windows Server 2022（組建 20348，和 Windows 10 同一代）；防毒是 Avast，以及開著即時保護的 Microsoft Defender，兩者各有一個但書。
+  差異備份的檢查是 0.2.0 加的，跑過其中九種 distro（Debian 13、Ubuntu 22.04、Fedora 44、AlmaLinux 8、Oracle Linux 7、
+  Arch Linux、openSUSE Tumbleweed、NixOS、Alpine 3.24；GNU tar 1.26、1.30、1.34、1.35）、兩個版本的 WSL 與三個版本的 Windows；
+  其餘的 distro 最後一次測試是 0.1.x。
   Avast 底下整套測試通過過很多次，但它的沙箱做過什麼，請看[疑難排解](#疑難排解)。
   Defender 是在 GitHub 的測試機器上、測試途中才打開的（那些機器平常不開它）。這樣跑的 65 次整套測試裡，59 次通過；
   1 次是排程的備份寫出來了卻沒有記成成功，能說明原因的紀錄檔沒有留下；另外 5 次是整台機器凍結（停止回應，之後失去連線），

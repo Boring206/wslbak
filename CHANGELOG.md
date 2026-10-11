@@ -35,6 +35,14 @@ never published.
 - With differential backups on, each run writes one temporary file inside the distro: tar's list of
   directories and file names, under `/run` (memory, not the distro's disk), removed when it has
   been read. Without them a backup still writes nothing inside the distro.
+- A test restore no longer fails over the distro's host name. WSL writes `/etc/hostname` every time
+  it starts a distro, and in the temporary copy it writes the PC's name, because the copy does not
+  get the `hostname` setting of the distro's `wsl.conf`. On a distro with a host name of its own the
+  file then differed from the backup whenever it was among the files picked for comparison: once in
+  a great while for a full backup, and nearly every time for a differential, which compares all of
+  its files when there are fewer than 512. It is no longer compared, and where it is a symbolic link
+  (NixOS keeps it in `/nix/store`) a difference in the file behind the link is not counted either.
+  Found on NixOS, whose `wsl.conf` sets a host name.
 - A scheduled run that finds another wslbak still running after 20 hours now fails (exit code 2) and
   notifies you that a backup has been running for that many hours and is probably stuck. A run
   started by hand says so too.
