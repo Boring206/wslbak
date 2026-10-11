@@ -264,7 +264,11 @@ or attributes changed since that full backup, and every directory. A differentia
 full backup and on nothing else, so a restore never needs more than two archives, and deleting one
 differential does not affect another. `wslbak config --mode full` switches back.
 
-@@NUMBERS@@
+How much smaller a differential is depends on how much changes between two backups. In the
+end-to-end test on the development PC, the full backup of a freshly installed Debian with the test
+files is 182 MB, and the differential made after the test had edited, added, renamed and deleted a
+few dozen files is 582 KB. A run in this mode first lists every file of the distro without reading
+any of them; with two million files that took 13 seconds.
 
 - **How long a full backup is built on.** 30 days, or what you give with `--full-every <days>`; the
   backup after that is a full one. `wslbak run --full` makes a full backup at any time. A

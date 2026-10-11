@@ -130,6 +130,12 @@ expect_true "with all its files" [ "$(sh_in "$DISTRO" 'find /scale-back-d7/scale
 section "Differential backups"
 # The listing pass and the comparison with the full backup's index are the parts that grow
 # with the number of files.
+#
+# A differential holds what changed since five minutes before its full backup, and every
+# file here was planted more recently than that. The margin is therefore set to nothing
+# (a switch for tests, see testhooks.go), or the differential would hold all of them.
+export WSLBAK_TEST_SINCE_MARGIN_SECONDS=0
+export WSLENV="${WSLENV:+$WSLENV:}WSLBAK_TEST_SINCE_MARGIN_SECONDS"
 run config --mode diff
 expect_rc 0 "config --mode diff succeeds"
 run --debug run
@@ -143,7 +149,11 @@ expect_has "what changed since the full backup" "it is a differential"
 expect_has "test restore passed" "and passes its test restore together with the full backup"
 PEAK="$(debug_value 'peak memory')"
 note "the differential took $TOOK s, peak memory $PEAK: $(grep -E 'wrote |test restore passed' <<<"$OUT" | sed 's/^ *//' | tr '\n' ';')"
-note "$(sed -n 's/^\[debug\] \(differential .* written.*\)$/\1/p' <<<"$OUT" | head -n 1)"
+WRITTEN="$(sed -n 's/^\[debug\] \(differential .* written.*\)$/\1/p' <<<"$OUT" | head -n 1)"
+note "$WRITTEN"
+# Every directory is in a differential, and the handful of files that changed; the two
+# million others and the big file are not.
+expect_true "the differential holds the directories and what changed, not the other $FILES files" [ "$(sed -n 's/.* \([0-9]*\) entries;.*/\1/p' <<<"$WRITTEN")" -lt 10000 ]
 expect_true "the program stays well under a gigabyte of memory" bash -c 'case "$0" in *" MB" | *" KB") exit 0 ;; *) exit 1 ;; esac' "$PEAK"
 run --debug files /scale/files/d9
 expect_rc 0 "files lists a folder of the differential restore point"
