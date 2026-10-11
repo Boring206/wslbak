@@ -62,16 +62,17 @@ ROWS = (HEIGHT - TOP - int(20 * S)) // LINE
 CARDS = {
     'en': {
         'tagline': 'Backups of a WSL distro that do not stop it',
-        'tour': 'a one-minute tour',
+        'tour': 'a ninety-second tour',
         'points': ['every backup is test-restored', 'restore a whole distro, or a single file',
-                   'a standard .tar.gz that wsl --import accepts'],
+                   'a standard .tar.gz that wsl --import accepts', 'optional: on most days, only what changed'],
         'small': ['Recorded as it happened, on a PC with wslbak installed from its npm package and a demo distro.',
                   'No text is changed. Typing speed is drawn; waits over a second and a half are shortened.'],
     },
     'zh-TW': {
         'tagline': '不用停機的 WSL 備份',
-        'tour': '一分鐘看完怎麼用',
-        'points': ['每份備份都試還原過', '可以還原整個 distro，也可以只取回一個檔案', '標準的 .tar.gz，wsl --import 直接能用'],
+        'tour': '一分半看完怎麼用',
+        'points': ['每份備份都試還原過', '可以還原整個 distro，也可以只取回一個檔案', '標準的 .tar.gz，wsl --import 直接能用',
+                   '可以選擇：平常只存變過的部分'],
         'small': ['全程實錄：電腦上真的用 npm 套件裝了 wslbak，並有一個示範用的 distro。',
                   '文字沒有任何修改。打字速度是畫出來的；超過一秒半的等待有縮短。'],
     },

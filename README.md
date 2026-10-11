@@ -10,15 +10,16 @@ notification when something fails, and a one-line restore.
 > Keep the backups you already have until it has proven itself on your PC. Differential backups
 > are new in 0.2.0 and switched off unless you turn them on.
 
-![A one-minute tour: setting up, backing up, looking inside a backup, bringing back one file, restoring a whole distro](docs/demo.en.gif)
+![A ninety-second tour: setting up, backing up, looking inside a backup, bringing back one file, a differential backup, restoring a whole distro](docs/demo.en.gif)
 
 The same tour as a [video](docs/demo.en.mp4). It is a recording of the commands as they ran, on a
 PC where wslbak was installed from its npm package and a demo distro named `wslbak-demo` existed;
 no text that the commands printed is changed. The drawing script adds the step titles and the cards
 at the start and the end, types the commands at a drawn speed, shows long output a page at a time
-and shortens waits. The recording was made with version 0.1.0; since then `init` ends with one more
-line (a hint about differential backups) and `list` has a column that says whether a backup is a
-full or a differential one.
+and shortens waits. A question is put after the lines that were printed before it, as on a console;
+the recorder receives the two separately. The recording was made with version 0.2.0. The tour
+switches differential backups on to show one; without `wslbak config --mode diff`, every backup is a
+full one.
 
 Files inside WSL are not covered by OneDrive or most backup tools: they live in one virtual disk, and
 when that disk is damaged or Windows is reinstalled, everything in it is gone. The usual answer is a
@@ -497,7 +498,8 @@ the last 20 hours.
   because the whole machine froze (it stopped answering and then lost its connection), two of them
   before wslbak had started. The freezing is put down to those machines, not to wslbak: of 54
   machines of the same kind that only set WSL up, with no wslbak on them, one froze as well, while
-  108 machines that switched Defender on and did not use WSL all kept running. The arm64 executables
+  108 machines that switched Defender on and did not use WSL all kept running. With 0.2.0 the suite
+  has run there twice more and passed both times. The arm64 executables
   start and pass the unit tests on arm64 Windows, where no WSL was available to back up. Not tried
   yet: Windows 10 itself, a PC with Docker Desktop, and distros of 100 GB or more; reports are
   welcome.
@@ -555,7 +557,9 @@ npm run dist     # release zips, checksums, and winget and scoop manifests in di
 package and a demo distro, runs the commands for real (the real settings folder, scheduled task
 and default folders, so it refuses to start on a PC where wslbak is set up), records what they
 print, draws the recording and removes what it created. It needs `npm run build` to have run,
-python3 inside WSL, a Python with Pillow on Windows and, for the video file, ffmpeg.
+python3 inside WSL, a Python with Pillow on Windows and, for the video file, ffmpeg. It takes a
+quarter of an hour, six minutes of which it waits: the demo distro has to be older than the five
+minutes a differential reaches back before its full backup.
 
 `npm run e2e` creates a Debian distro named `wslbak-e2e-<random>` on first use; set
 `KEEP_E2E_DISTRO=1` to keep it for the next run, and remove it with `scripts/e2e-distro.sh destroy`.

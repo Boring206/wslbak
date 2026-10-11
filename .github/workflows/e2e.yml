@@ -100,9 +100,9 @@ jobs:
           distribution: Debian-13
           wsl-version: 2
           additional-packages: nodejs npm curl python3 xz-utils
-      # The suite takes about 25 minutes (23 and 24 on these runners with the section on
-      # differential backups, which accounts for seven of them). The limit keeps a run that
-      # hangs from using up the whole job, and leaves time for the steps after it.
+      # The suite takes 23 to 27 minutes on these runners, the longest with Defender on; the
+      # section on differential backups accounts for seven or eight of them. The limit keeps
+      # a run that hangs from using up the whole job, and leaves time for the steps after it.
       - name: Run the end-to-end tests
         shell: wsl-bash {0}
         timeout-minutes: 60

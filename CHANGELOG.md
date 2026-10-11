@@ -49,6 +49,8 @@ never published.
 - When a WSL command can neither finish nor be ended (which can happen when WSL as a whole stops
   answering), wslbak stops waiting about half a minute after the command's time limit and reports
   the failure, instead of waiting for ever.
+- The tour at the top of the README was recorded again with this version, and now shows a
+  differential backup as well.
 - The README says what was seen with Avast's sandbox (a second, isolated copy of the program that
   sends a failure notification of its own; WSL no longer starting Windows programs), and what was
   found about GitHub's test machines that stopped answering with Microsoft Defender switched on.

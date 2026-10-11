@@ -19,6 +19,12 @@
 #
 # It needs, besides what the end-to-end tests need, a Python with Pillow on Windows (set
 # DEMO_PYTHON to its path) and, for the .mp4 files, ffmpeg (set FFMPEG).
+#
+# Some antivirus products run a program they have not seen before in a sandbox: Avast did so
+# with the freshly installed wslbak, for half a minute at each of its starts, as a second
+# copy with the same arguments. To keep that out of a recording, set DEMO_NPM_PREFIX to a
+# folder (a path inside WSL, on a Windows drive) that the antivirus is told to leave alone;
+# the package is then installed there. The folder must not exist yet.
 set -u
 
 cd "$(dirname "$0")/.."
@@ -37,13 +43,14 @@ PROFILE_WIN="$(env_win USERPROFILE)"
 LOCAL="$(wslpath -u "$LOCAL_WIN")"
 PROFILE="$(wslpath -u "$PROFILE_WIN")"
 WORK="$LOCAL/wslbak-demo-work"
+NPM_PREFIX="${DEMO_NPM_PREFIX:-$WORK/npm}"
 DEMO_DIR_WIN="$LOCAL_WIN\\wslbak-demo-work\\distro"
 DEST_ROOT=""
 names() { wsl_exe -l -q </dev/null | tr -d '\r' | sed '/^$/d'; }
 task_rows() { win "$SYS32/schtasks.exe" /Query /FO CSV /NH </dev/null 2>/dev/null | tr -d '\r' | grep -ci '"\\wslbak-S-'; }
 
 # ---- Refuse to start where wslbak, or an earlier run of this script, has left anything.
-for path in "$LOCAL/wslbak" "$LOCAL/Programs/wslbak" "$WORK"; do
+for path in "$LOCAL/wslbak" "$LOCAL/Programs/wslbak" "$WORK" "$NPM_PREFIX"; do
 	[ -e "$path" ] && { echo "Refusing: $path exists. This script needs a PC where wslbak is not set up."; exit 2; }
 done
 [ "$(task_rows)" = 0 ] || { echo "Refusing: a wslbak scheduled task exists."; exit 2; }
@@ -100,20 +107,31 @@ cleanup() {
 	else
 		rm -rf "$WORK"
 	fi
+	# The package, when it was installed somewhere else: only a folder that holds what npm
+	# put there for this script and nothing besides.
+	if [ "$NPM_PREFIX" != "$WORK/npm" ] && [ -d "$NPM_PREFIX/lib/node_modules/wslbak" ]; then
+		local entry extra=""
+		for entry in "$NPM_PREFIX"/* "$NPM_PREFIX"/.[!.]* "$NPM_PREFIX"/lib/node_modules/* "$NPM_PREFIX"/lib/node_modules/.[!.]*; do
+			[ -e "$entry" ] || continue
+			case "${entry#"$NPM_PREFIX"/}" in bin | lib | lib/node_modules/wslbak) ;; *) extra="$entry" ;; esac
+		done
+		if [ -z "$extra" ]; then rm -rf "$NPM_PREFIX"; else echo "left in place (it holds other things): $NPM_PREFIX" >&2; fi
+	fi
 }
 trap cleanup EXIT
 
 # ---- The command "wslbak": the package as npm would install it.
 mkdir -p "$WORK" local/demo docs
 TGZ="$(npm pack --ignore-scripts --silent --pack-destination "$WORK" 2>/dev/null | tail -n 1)"
-npm install --global --prefix "$WORK/npm" --silent --no-audit --no-fund "$WORK/$TGZ" >/dev/null 2>&1 || { echo "Could not install the packed package."; exit 2; }
-export PATH="$WORK/npm/bin:$PATH"
+npm install --global --prefix "$NPM_PREFIX" --silent --no-audit --no-fund "$WORK/$TGZ" >/dev/null 2>&1 || { echo "Could not install the packed package."; exit 2; }
+export PATH="$NPM_PREFIX/bin:$PATH"
 command -v wslbak >/dev/null || { echo "wslbak is not on the PATH after installing it."; exit 2; }
 
 # ---- The demo distro and the small project in it.
 ensure_interop
 wsl_exe --install Debian --name "$DEMO" --location "$DEMO_DIR_WIN" --no-launch </dev/null >/dev/null 2>&1
 [ -n "$(registered_path "$DEMO")" ] || { echo "Could not install the demo distro."; exit 2; }
+INSTALLED_AT=$SECONDS
 in_demo() { printf '%s\n' "$1" | win "$WSL" -d "$DEMO" -u root -e sh -s 2>&1 | tr -d '\r' | grep -v '^wsl: ' || true; }
 in_demo 'useradd -m -u 1000 -s /bin/bash me' >/dev/null
 wsl_exe --manage "$DEMO" --set-default-user me </dev/null >/dev/null 2>&1
@@ -121,7 +139,7 @@ reset_project() {
 	in_demo '
 rm -rf /home/me/recovered /home/me/project
 mkdir -p /home/me/project/src /home/me/project/data
-printf "# Release notes\n\n- ship wslbak 0.1.0\n- write the README\n" >/home/me/project/notes.md
+printf "# Release notes\n\n- ship wslbak 0.2.0\n- write the README\n" >/home/me/project/notes.md
 printf "print(\"hello\")\n" >/home/me/project/src/app.py
 printf "id,name\n1,alpha\n2,beta\n" >/home/me/project/data/items.csv
 printf "node_modules/\n" >/home/me/project/.gitignore
@@ -129,6 +147,7 @@ chown -R me:me /home/me' >/dev/null
 }
 
 # ---- Where will the backups go? Ask wslbak, and refuse if that folder is already there.
+ensure_interop
 PLAN="$(WSLBAK_LANG=en timeout 120 wslbak init -d "$DEMO" --dry-run </dev/null 2>&1 | tr -d '\r')"
 DEST_WIN="$(sed -n 's/^ *Backups go to *//p' <<<"$PLAN" | head -n 1)"
 [ -n "$DEST_WIN" ] || { echo "Could not find out where the backups would go:"; echo "$PLAN"; exit 2; }
@@ -137,6 +156,16 @@ if [ -e "$DEST_ROOT" ]; then
 	echo "Refusing: the default backup folder $(wslpath -w "$DEST_ROOT") exists already."
 	DEST_ROOT=""
 	exit 2
+fi
+
+# The tour makes a full backup and then a differential, which holds what changed since five
+# minutes before the full backup. Every file of a distro installed a moment ago is newer than
+# that, so its differential would hold the whole distro, as that of no distro in use does.
+# The recording therefore starts when the demo distro is six minutes old.
+AGE=$((SECONDS - INSTALLED_AT))
+if [ "$AGE" -lt 360 ]; then
+	echo "waiting $((360 - AGE)) s, until the demo distro is six minutes old"
+	sleep $((360 - AGE))
 fi
 
 status=0
