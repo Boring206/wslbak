@@ -134,8 +134,9 @@ jobs:
         run: node scripts/pack-check.mjs
       # Installed with sudo, the files belong to root and the launcher cannot change their
       # mode any more: they have to be readable and executable for everybody as they come.
-      # They go into a folder of root's own: the folder npm uses on these runners has access
-      # rules that make every new file writable for all, which no ordinary PC has.
+      # Only those bits are tested. On these runners npm leaves the executables writable for
+      # all as well (mode 777, with access rules on the folder), in npm's own folder and in
+      # a folder made by root alike, which says nothing about the package.
       - name: Installed with sudo, anybody can start them
         run: |
           tgz="$(npm pack --ignore-scripts --silent | tail -n 1)"
