@@ -476,11 +476,20 @@ func TestExplain(t *testing.T) {
 			w.gone = []string{"./new"}
 		}, everything, ""},
 		{"a name tar reports that is not in the listing changes nothing", func(w *world) { w.gone = []string{"./b/never-seen", `./odd\q`} }, everything, ""},
-		// 一個新目錄在清單之後還在變：清單裡有、這一趟沒收到的名稱，是剛被刪掉的。
-		{"a file in a new directory was gone a moment later", func(w *world) {
+		// 一個完整備份沒見過的目錄在清單之後還在變，清單裡有個名稱這一趟沒收到。它多半是新目錄裡剛被刪掉的檔案，
+		// 但也可能是從完整備份沒走過的地方（被排除的路徑）搬進來的舊目錄裡的舊檔案：
+		// 兩者分不出來，所以不留這份差異。
+		{"a file in a directory the full backup never saw is not excused, even if the directory just changed", func(w *world) {
 			w.now[0].children = []string{"Da", "Db", "Dc"}
 			w.now = append(w.now, snapDir{"./c", 50, []string{"Ytemp"}})
 			w.diff = append(w.diff, dirAt("./c", testListStart+5))
+		}, "", whyChanging},
+		// 同一個目錄裡，tar 自己說走到時已經不見的名稱，照樣不算問題。
+		{"…unless tar itself found it gone", func(w *world) {
+			w.now[0].children = []string{"Da", "Db", "Dc"}
+			w.now = append(w.now, snapDir{"./c", 50, []string{"Ytemp"}})
+			w.diff = append(w.diff, dirAt("./c", testListStart+5))
+			w.gone = []string{"./c/temp"}
 		}, everything, ""},
 		// 同樣的情況，但那個目錄在完整備份當時就存在了（只是當時在備份途中被搬動，沒有記成路徑）：
 		// 它是舊目錄，底下沒收到的是舊檔案，不能當成剛被刪掉。
@@ -495,6 +504,18 @@ func TestExplain(t *testing.T) {
 		}, "./a/f1 ./a/f2 ./a/h", ""},
 		{"a directory created after the listing", func(w *world) {
 			w.diff = append(w.diff, dirAt("./late", testListStart+5), entry(typeFile, "./late/x"))
+		}, everything, ""},
+		// 兩件事在同一趟裡發生：舊目錄不見了，又出現一個清單沒有的目錄。這可能是改名，
+		// 而改名的目錄底下沒變過的檔案兩邊都不會有。
+		{"an old directory vanished and another appeared during the run: it may be a rename", func(w *world) {
+			w.diff = []indexEntry{dirAt(".", testListStart+5), dirAt("./a", 1000), dirAt("./c", testListStart+5)}
+		}, "", whyChanging},
+		// 不見的若是完整備份之後才建的目錄，就沒有舊檔案可以遺失。
+		{"a directory newer than the full backup vanished while another appeared", func(w *world) {
+			w.now[0].children = []string{"Da", "Db", "Dn"}
+			w.now = append(w.now, snapDir{"./n", 50, []string{"Yx"}})
+			w.diff = append(w.diff, dirAt("./late", testListStart+5))
+			w.diff[0] = dirAt(".", testListStart+5)
 		}, everything, ""},
 		{"a file that appeared after the listing replaces the old one", func(w *world) {
 			w.now[2].children = []string{"Ys"}

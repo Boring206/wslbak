@@ -62,6 +62,7 @@ const (
 	whyAlias          = "alias"      // 同一個目錄從兩條路徑都走得到
 	whyListing        = "listing"    // 清單拿不到，或不能用
 	whyMoved          = "moved"      // 有檔案換了位置卻沒有變過（目錄被改名或搬動）
+	whyChanging       = "changing"   // 備份途中有檔案或目錄出現又消失，分不出有沒有舊檔案沒被交代到
 	whyStructure      = "structure"  // 寫出來的差異沒有通過結構檢查
 )
 
@@ -465,9 +466,11 @@ type explainer struct {
 	// diffCTime 是這一趟看到的每個目錄的變更時間（秒）。
 	diffCTime map[*listedDir]int64
 
-	drop     []byte
-	seen     int64
-	dropped  int64
+	drop    []byte
+	seen    int64
+	dropped int64
+	// newDirs 是這一趟寫出來、清單裡卻沒有的目錄數：清單之後才出現的目錄。
+	newDirs  int
 	why      string
 	detail   string
 	examples []string
@@ -489,11 +492,14 @@ func (x *explainer) fail(why, detail string) {
 }
 
 // unexplained 記下一個解釋不了的檔案。名稱只進紀錄檔，不進通知。
-func (x *explainer) unexplained(name string) {
+func (x *explainer) unexplained(name string) { x.unexplainedAs(whyMoved, name) }
+
+// unexplainedAs 和 unexplained 一樣，只是原因由呼叫的地方決定。
+func (x *explainer) unexplainedAs(why, name string) {
 	if len(x.examples) < 3 {
 		x.examples = append(x.examples, displayPath(name))
 	}
-	x.fail(whyMoved, "")
+	x.fail(why, "")
 }
 
 // sameDir 回報清單裡的這個目錄是不是完整備份當時、同一個路徑上的那個目錄。
@@ -527,6 +533,7 @@ func (x *explainer) sawDiffEntry(e indexEntry) {
 			x.fail(whyListing, "a directory is missing from the listing: "+plain(displayPath(name)))
 		}
 		x.extra[name] = true
+		x.newDirs++
 		return
 	}
 	dir.inDiff = true
@@ -598,10 +605,15 @@ func (x *explainer) finish(baseEntries int64) (drop []byte, why, detail string) 
 		x.fail(whyStructure, fmt.Sprintf("the index of the full backup has %d entries, its manifest says %d", x.seen, baseEntries))
 	}
 	if x.why == "" {
+		// goneOld 是「完整備份當時就在、清單裡也有、這一趟卻沒寫出來」的目錄數：清單之後才消失的舊目錄。
+		goneOld := 0
 	search:
 		for name, dir := range x.list.dirs {
 			if !dir.inDiff {
 				// 清單之後消失的目錄：底下的東西跟著沒了。
+				if x.baseInos[dir.ino] {
+					goneOld++
+				}
 				continue
 			}
 			for i := 0; i < dir.count(); i++ {
@@ -623,13 +635,27 @@ func (x *explainer) finish(baseEntries int64) (drop []byte, why, detail string) 
 				// 清單裡有，這一趟沒收，完整備份裡也沒有。唯一正常的解釋是它在清單之後被刪掉或改名了
 				// （否則它是新的，這一趟會收到）。tar 走到它時才發現不見的，tar 會說，前面已經記下了；
 				// 剩下的是在那之前就不見的：那樣的話，tar 看到它所在的目錄時，目錄才剛變過。
-				// 一個從別處搬來的舊目錄不適用這個解釋：它底下的舊檔案本來就不會被這一趟收到。
-				if x.changedDuringRun(dir) && (x.sameDir(name, dir) || !x.baseInos[dir.ino]) {
+				// 這個解釋只給「還是完整備份當時那個目錄」的目錄。其他目錄不適用：從別處搬來的舊目錄，
+				// 底下的舊檔案本來就不會被這一趟收到；而一個完整備份沒見過的目錄，分不出它是新建的，
+				// 還是從完整備份沒走過的地方（被排除的路徑）搬進來的舊目錄。
+				if x.changedDuringRun(dir) && x.sameDir(name, dir) {
 					continue
 				}
-				x.unexplained(name + "/" + dir.name(i))
+				// 對使用者說的原因分兩種。目錄在備份途中變過、完整備份又沒見過它：多半是新目錄裡剛被刪掉的
+				// 檔案，說成「有資料夾被改名」會讓人摸不著頭緒，所以另有一句。其餘的照舊算成搬動。
+				why := whyMoved
+				if x.changedDuringRun(dir) && !x.baseInos[dir.ino] {
+					why = whyChanging
+				}
+				x.unexplainedAs(why, name+"/"+dir.name(i))
 				break search
 			}
+		}
+		// 清單和打包之間，有舊目錄不見了，同時又有清單裡沒有的目錄出現：分不出這是「刪掉一個、新建一個」
+		// 還是「把一個改了名」。改名的話，底下沒變過的檔案兩邊都不會有（舊名字當成刪了，新名字底下這一趟
+		// 收不到），所以不能留下這份差異。
+		if x.why == "" && goneOld > 0 && x.newDirs > 0 {
+			x.fail(whyChanging, "a folder disappeared and another appeared while the backup ran")
 		}
 	}
 	if x.why != "" {

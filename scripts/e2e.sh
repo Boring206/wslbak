@@ -434,6 +434,10 @@ expect_rc 3 "a second run exits 3 while the first is still going"
 expect_has "already running" "and says why"
 wait "$BG"
 expect_true "the first run finished normally" [ $? = 0 ]
+# A running wslbak writes the time it started into the lock file, for the 20-hour rule. It
+# has to be gone again afterwards: left there, it would be taken for the age of whatever
+# holds the lock next (a 0.1.x, which writes no time of its own).
+expect_true "the lock file holds no starting time once nobody is running" [ "$(dd if="$HOME_DIR/wslbak.lock" bs=1 skip=1 count=20 2>/dev/null; echo .)" = "$(printf '%20s.' '')" ]
 
 section "8. Retention"
 # keep is 2 and three verified backups exist now, so the oldest must be gone.
@@ -659,11 +663,11 @@ if [ -n "$HOOK_PORT" ] && win "$SYS32/curl.exe" -s -m 5 -o NUL "http://localhost
 	expect_true "and the message names no file" bash -c "! grep -q -e 'tar\.gz' -e 'partial' -e 'wslbak-fixture' '$HOOK_LOG'"
 	run status
 	expect_has "Problem in the latest run" "status shows the failed run"
-	# A run that still holds the lock a day later is probably stuck (a WSL that has stopped
-	# answering can leave it waiting for ever). It cannot say so itself, so the scheduled run
-	# that finds it does, instead of leaving quietly as it does for a run that is merely in
-	# progress. The first run here is only slowed down; the later ones are told that it has
-	# been going for 30 hours.
+	# A wslbak that still holds the lock a day later is probably stuck, or is a window left
+	# waiting at a question (one started by the schedule cannot be: Windows ends that after
+	# 12 hours). It cannot say so itself, so the scheduled run that finds it does, instead of
+	# leaving quietly as it does for a run that is merely in progress. The first run here is
+	# only slowed down; the later ones are told that it has been going for 30 hours.
 	: >"$HOOK_LOG"
 	ensure_interop
 	# At 4 MiB a second the run holds the lock for a minute or two on the distros this suite
@@ -697,11 +701,12 @@ if [ -n "$HOOK_PORT" ] && win "$SYS32/curl.exe" -s -m 5 -o NUL "http://localhost
 	fi
 	run_with WSLBAK_TEST_LOCK_AGE_HOURS=30 -- run --scheduled
 	expect_rc 2 "when the other run has been going for 30 hours, the scheduled run fails instead"
-	expect_true "and a notification says that a backup has been running for 30 hours" grep -q 'running for 30 hours' "$HOOK_LOG"
+	expect_true "and a notification says that another wslbak has been running for 30 hours" grep -q 'another wslbak has been running for 30 hours' "$HOOK_LOG"
 	expect_true "the log says so too" grep -q 'has been running for 30 hours and is probably stuck' "$HOME_DIR/wslbak.log"
 	run_with WSLBAK_TEST_LOCK_AGE_HOURS=30 -- run
 	expect_rc 3 "a run started by hand still exits 3"
-	expect_has "probably stuck" "and adds that the other run is probably stuck"
+	expect_has "It has been running for 30 hours." "and adds for how long the other one has been running"
+	expect_has "otherwise it is probably stuck" "and what to do about it"
 	wait "$LONG_PID"
 	expect_true "the slowed-down run finished normally" [ $? = 0 ]
 	if [ -n "${SHOW_LONG:-}" ]; then
@@ -797,6 +802,22 @@ else
 		bad "the backup was over before it could be frozen" "$(tr -d '\r' <"$SANDBOX/frozen.log")"
 	fi
 fi
+
+section "13j. A distro that sends nothing"
+# When WSL does not answer, a backup gets no data at all, not even the beginning of the
+# archive. Here the script in the distro is made to wait before it does anything, and "no
+# data for 5 seconds" counts as stalled, so the run has to give up long before the script
+# would have gone on.
+BEGAN=$SECONDS
+run_with WSLBAK_TEST_START_DELAY_SECONDS=300 WSLBAK_TEST_STALL_SECONDS=5 -- run --no-verify
+expect_rc 2 "a backup that receives nothing is given up"
+expect_has "No data arrived" "and says that no data arrived"
+expect_true "without waiting for the distro to answer" [ $((SECONDS - BEGAN)) -lt 120 ]
+expect_true "no partial file is left" [ -z "$(find "$DEST/$DISTRO" -name '*.partial')" ]
+run status
+expect_has "Problem in the latest run" "status shows the failed run"
+run run --no-verify
+expect_rc 0 "the next run succeeds"
 
 section "13f. A Windows notification really arrives"
 TOAST_KEY='HKCU\Software\Classes\AppUserModelId\Boring206.wslbak'
@@ -1020,6 +1041,7 @@ expect_true "that backup is a full one, with the record of its directories next 
 expect_true "nothing was left behind in the distro by the listing" [ -z "$(sh_in "$DISTRO" 'ls /run/wslbak-list.* /dev/shm/wslbak-list.* 2>/dev/null')" ]
 run run --dry-run
 expect_has "would make a differential backup (on the full backup $BASE)" "now run --dry-run announces a differential"
+expect_has "the backup would then be test-restored" "which would be test-restored, as the first one of its full backup"
 
 expect_true "the tree is changed in every way a differential has to follow" [ "$(mutate change)" = "done change" ]
 run run
@@ -1074,11 +1096,17 @@ run files "$D1" --find deleted.txt
 expect_rc 1 "files --find does not find the deleted file either"
 run files "$BASE" --find deleted.txt
 expect_rc 0 "while the full backup still has it"
-run restore "$D1" --path /wslbak-diff/keep --path /wslbak-diff/edited.txt --path /wslbak-diff/hard-c --into /root/diff-back --yes
+run restore "$D1" --path /wslbak-diff/keep --path /wslbak-diff/newdir --path /wslbak-diff/edited.txt --path /wslbak-diff/hard-c --into /root/diff-back --yes
 expect_rc 0 "restore --path takes files from both halves of a differential restore point"
 expect_true "the unchanged file came from the full backup, with its time" [ "$(sh_in "$DISTRO" 'cat /root/diff-back/wslbak-diff/keep/unchanged.txt; stat -c %Y /root/diff-back/wslbak-diff/keep/unchanged.txt' | tr '\n' ' ')" = "never touched 1580702706 " ]
 expect_true "the edited file came from the differential" [ "$(sh_in "$DISTRO" 'tail -n 1 /root/diff-back/wslbak-diff/edited.txt')" = more ]
 expect_true "a directory taken from the differential keeps its mode and owner" [ "$(sh_in "$DISTRO" 'stat -c "%a %u:%g" /root/diff-back/wslbak-diff/keep/sub')" = "750 4321:8765" ]
+# In a differential restore point the directories are sent first and their files after them;
+# a file that arrives later must not leave its directory with the time of the restore.
+expect_true "and its time, although its file was written into it afterwards" [ "$(sh_in "$DISTRO" 'stat -c %Y /root/diff-back/wslbak-diff/keep/sub /root/diff-back/wslbak-diff/keep' | tr '\n' ' ')" = "$(sh_in "$DISTRO" 'stat -c %Y /wslbak-diff/keep/sub /wslbak-diff/keep' | tr '\n' ' ')" ]
+# keep/sub can come out right by the order of the full backup's entries alone. The only file of
+# newdir/inner is in the differential, which is sent last, so this folder shows it either way.
+expect_true "also for a folder whose only file comes from the differential" [ "$(sh_in "$DISTRO" 'stat -c %Y /root/diff-back/wslbak-diff/newdir/inner /root/diff-back/wslbak-diff/newdir' | tr '\n' ' ')" = "$(sh_in "$DISTRO" 'stat -c %Y /wslbak-diff/newdir/inner /wslbak-diff/newdir' | tr '\n' ' ')" ]
 # Which of the three names is stored as the file and which as links to it is up to tar. If
 # hard-c is a link, the file it points to has to come along; either way the names that came
 # back are one file.
@@ -1088,6 +1116,8 @@ sh_in "$DISTRO" 'rm -rf /root/diff-back' >/dev/null
 # The second differential of the same full backup gets the light check; verify always does
 # the real thing.
 mutate tick >/dev/null
+run run --dry-run
+expect_has "the differential would then be read back and checked (no test restore this time)" "run --dry-run says that the next differential only gets the check"
 run run
 expect_rc 0 "a second differential succeeds"
 expect_has "check passed: the archive is intact and its full backup is in place" "it is checked without importing the whole distro again"
@@ -1097,6 +1127,7 @@ run list
 expect_true "list shows it as checked" grep -q "^  $D2 .* diff .* checked" <<<"$OUT"
 run status
 expect_rc 0 "status counts a checked differential as a success"
+expect_has "of them passed their test restore or check" "and does not call that a test restore"
 expect_has "Differential backups: on; the last backup was a differential." "and says that the last backup was a differential"
 run verify "$D2"
 expect_rc 0 "verify test-restores a differential together with its full backup"

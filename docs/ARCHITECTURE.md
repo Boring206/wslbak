@@ -33,7 +33,7 @@ are the tree as it is now. Otherwise a full backup is made instead (`diff.go`).
 
 ```
 1  the listing    backup.sh in list mode: GNU tar --create --file=/dev/null
-                  --listed-incremental=<file under /run>. tar opens no file; the snapshot file
+                  --listed-incremental=<file under /run, or /dev/shm>. tar opens no file; the snapshot file
                   it leaves names every directory with its inode and the names in it. It is
                   sent out on standard output and deleted.              (snapshot.go)
 2  the dump       backup.sh in diff mode: the same tar options as a full backup, plus
@@ -67,7 +67,16 @@ at a second place; the clock earlier than at the full backup, or a directory who
 is earlier than the full backup and yet not the one recorded; the full backup older than
 `--full-every`; the last differential larger than half the full backup, or failed; a listing
 that is not one tree; a directory that is not the one it was (renamed, moved or swapped) with
-unchanged files in it; a hard link whose target would be dropped.
+unchanged files in it; a hard link whose target would be dropped; a name that the listing has and
+the dump has not, in a directory the full backup has no record of (a new directory cannot be told
+from an old one that came from an excluded path); and an old directory that vanished between the
+listing and the dump while a new one appeared (it may have been renamed, and its unchanged files
+would be in neither archive).
+
+Sockets, excluded names and sub-directories that vanished after the listing need no source. Any
+other name that is in the listing and in neither archive is excused in two cases only: tar itself
+said it was gone when it got there, or its directory is the one recorded with the full backup and
+has changed since the listing began.
 
 ## The test restore
 
@@ -124,7 +133,7 @@ the size it had.
 | `config.go`, `configcmd.go` | The settings file; `config`, including `--private` |
 | `install.go` | `init`, `uninstall`, the fixed copy of the program, choosing distros and the destination |
 | `schedule.go` | The scheduled task: its XML, creating, querying, deleting |
-| `wsl.go`, `wslreg.go`, `wslapi.go` | Starting `wsl.exe`, reading the list of distros from the registry, setting the default user |
+| `wsl.go`, `wslreg.go`, `wslapi.go` | Starting `wsl.exe` (always with a time limit, and with a way out when it can be neither finished nor ended), reading the list of distros from the registry, setting the default user |
 | `backup.go`, `backup.sh` | One backup: a tar run and what is checked about it; the listing pass; full and differential |
 | `snapshot.go` | Reading tar's snapshot file into a listing, and checking that it is one tree |
 | `diff.go` | Full or differential, and why; the proof; the record of directories; when to test-restore |
@@ -140,7 +149,7 @@ the size it had.
 | `run.go` | `run`, `list`, `status`, `verify`; when to notify |
 | `notify.go` | The Windows notification and the webhook |
 | `doctor.go`, `probe.sh`, `caches.sh` | `doctor`; what a distro looks like; how big its caches are |
-| `disk.go`, `paths.go`, `lock.go`, `log.go`, `ui.go` | Volumes, folders, the single-instance lock (which records when its holder started, so that a run still there 20 hours later is reported), the log, the terminal |
+| `disk.go`, `paths.go`, `lock.go`, `log.go`, `ui.go` | Volumes, folders, the single-instance lock (which records when its holder started, so that a wslbak still there 20 hours later is reported, and forgets it when the lock is released), the log, the terminal |
 | `testhooks.go` | Switches for the tests; they only work together with `--home` |
 | `bin/wslbak.js` | The npm launcher |
 | `scripts/` | Building, packaging, the end-to-end suites, the demo |

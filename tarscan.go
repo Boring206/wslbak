@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"path"
 	"strings"
+	"unicode/utf8"
 )
 
 // 備份時 tar 串流會同時流過這裡的掃描器。它不改動任何位元組，只記下三件事：
@@ -92,8 +93,13 @@ func sampleable(h *tar.Header) bool {
 	return plainName(h.Name) && !volatilePaths[h.Name]
 }
 
-// plainName：名稱裡沒有控制字元與反斜線，可以放進交給檢查腳本的清單（一行一個）。
+// plainName：名稱裡沒有控制字元與反斜線，可以放進交給檢查腳本的清單（一行一個）；
+// 而且是合法的 UTF-8：抽樣的名稱要寫進 manifest（JSON），不合法的位元組在那裡會被換掉，
+// 之後從磁碟讀回來的名稱就對不到原來的檔案了。
 func plainName(name string) bool {
+	if !utf8.ValidString(name) {
+		return false
+	}
 	for _, r := range name {
 		if r < 0x20 || r == 0x7f || r == '\\' {
 			return false

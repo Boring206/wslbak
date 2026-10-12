@@ -1,5 +1,5 @@
 # Publishes a release when a tag like v0.1.0 is pushed:
-#   unit tests -> build -> zips and checksums -> GitHub Release -> npm
+#   unit tests -> build -> zips and checksums -> GitHub Release -> npm, in that order
 #
 # The npm step uses trusted publishing (no token is stored anywhere). It needs, once:
 #   - the package to exist on npm already (the very first publish is done by hand),
@@ -133,16 +133,20 @@ jobs:
       - name: The executables are packed as executable
         run: node scripts/pack-check.mjs
       # Installed with sudo, the files belong to root and the launcher cannot change their
-      # mode any more: they have to be executable for everybody as they come.
+      # mode any more: they have to be readable and executable for everybody as they come.
+      # They go into a folder of root's own: the folder npm uses on these runners has access
+      # rules that make every new file writable for all, which no ordinary PC has.
       - name: Installed with sudo, anybody can start them
         run: |
           tgz="$(npm pack --ignore-scripts --silent | tail -n 1)"
           tar -tvzf "$tgz"
-          sudo env "PATH=$PATH" npm install --global --no-audit --no-fund "./$tgz"
-          dir="$(npm root --global)/wslbak/bin"
+          sudo mkdir /opt/wslbak-rehearsal
+          sudo env "PATH=$PATH" npm install --global --prefix /opt/wslbak-rehearsal --no-audit --no-fund "./$tgz"
+          dir=/opt/wslbak-rehearsal/lib/node_modules/wslbak/bin
           ls -l "$dir"
           for name in wslbak-x64.exe wslbak-arm64.exe wslbakw-x64.exe wslbakw-arm64.exe wslbak.js; do
-            if [ "$(stat -c %a "$dir/$name")" != 755 ] || [ ! -x "$dir/$name" ]; then
+            mode="$(stat -c %a "$dir/$name")"
+            if [ $((0$mode & 5)) != 5 ] || [ ! -x "$dir/$name" ]; then
               echo "$name is not executable for everybody: $(stat -c '%U %a' "$dir/$name")"
               exit 1
             fi
@@ -175,8 +179,10 @@ jobs:
             dist/*.zip
             dist/SHA256SUMS
 
+  # After the GitHub Release, because this is the step that cannot be taken back: a version
+  # on npm stays. If the release job fails, nothing is published; fix it and run it again.
   npm:
-    needs: build
+    needs: [build, github-release]
     # Trusted publishing with provenance needs a public repository, and the publisher has
     # to be set up on npmjs.com first (see the top of this file).
     if: ${{ github.event_name == 'push' && !github.event.repository.private && vars.NPM_TRUSTED_PUBLISHER == 'yes' }}

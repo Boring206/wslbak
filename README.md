@@ -1,6 +1,6 @@
 # wslbak
 
-**English** | [繁體中文](README.zh-TW.md)
+**English** | [繁體中文](README-zh-TW.md)
 
 Scheduled backups of a WSL distro that do not stop it, a test restore after every backup, a
 notification when something fails, and a one-line restore.
@@ -30,16 +30,19 @@ while it keeps running:
 
 ```
 > wslbak init
+> wslbak config --mode diff
 > wslbak run
 Backing up wslbak-demo → D:\WSLBackup\wslbak-demo
-  wrote 20261009T181645Z.tar.gz (91 MB, 2 s)
+  A full backup this time: there is no full backup yet that a differential can build on
+  wrote 20261012T021909Z.tar.gz (91 MB, 2 s)
 Test restore…
   test restore passed: all 512 sampled files match (2 s)
 Done.
 ```
 
-(This is the run in the recording: a freshly installed Debian holding 262 MB. A distro you work in
-is larger and takes correspondingly longer.)
+(This is the run in the recording: a freshly installed Debian holding 270 MB. A distro you work in
+is larger and takes correspondingly longer. The second command is optional: it switches differential
+backups on, and the line about a full backup is there because of it.)
 
 - **The distro is never stopped.** A root `tar` inside the distro streams it out; WSL is not shut down
   and nothing is written to the distro's disk.
@@ -79,6 +82,11 @@ from there. Keep `wslbak.exe` and `wslbakw.exe` together.
 In every case the executables are prebuilt, so Go is not needed. `wslbak init` copies them to a fixed
 place of its own, so the download folder, the npm installation or the Scoop folder can change later without
 breaking the schedule.
+
+**Updating.** Install the new version the same way (`npm install -g wslbak`, `scoop update wslbak`,
+or a new zip), then run a wslbak command once, for example `wslbak status`. The scheduled task runs
+the copy in that fixed place, and the copy is brought up to date when the new version runs a
+command; `--version`, `--help` and `--dry-run` do not do it. `wslbak init` is not needed again.
 
 ## Getting started
 
@@ -293,6 +301,12 @@ three small changes is 100 KB, next to a full backup of 88 MB.
   - an old folder was renamed or moved, or two folders changed places. The files in it did not
     change, so tar does not pick them up, and they are not where the full backup has them. (A
     renamed file is no problem, and neither is a new folder.)
+  - while the backup ran, a file disappeared from a folder that the full backup has no record of.
+    Most likely that is a new folder with a short-lived file in it, but it could be an old folder
+    that was moved in from a path the full backup leaves out (an excluded one), and the two
+    cannot be told apart;
+  - while the backup ran, an old folder disappeared and a new one appeared. That may have been a
+    rename, and then the unchanged files in it would be in neither archive;
   - a folder of the distro is mounted at a second place inside it, so everything in it is seen
     twice;
   - the exclude list changed, or the distro's tar is another version;
@@ -309,15 +323,19 @@ three small changes is 100 KB, next to a full backup of 88 MB.
   back after every run (it unpacks, its checksum and its number of entries are what was written,
   its full backup is in place with the size it had), and is test-restored together with its full
   backup for the first differential of each full backup and again whenever the last such test is
-  seven days old. `wslbak verify <id>` does the real test restore whenever you ask.
+  seven days old. `wslbak verify <id>` does the real test restore whenever you ask. Switching
+  the test restore off switches the read-back off with it: with `--verify none`, and for a run
+  with `--no-verify`, a differential is not checked at all. And while test restores are on, a full
+  backup that was made with `--no-verify` is not built on; the next run makes another full backup.
 - **Keeping.** `--keep` and the weekly and monthly rules count every backup, full or differential,
   as one. A full backup is never deleted while a differential that passed its check still needs
   it, so a few more files than `--keep` says can be there.
 - **What it writes inside the distro.** To know what is there now, tar first walks the whole tree
   without opening any file and leaves a list of the names. That list is a temporary file under
-  `/run`, which is memory and not the distro's disk; only root can read it, and it is deleted as
-  soon as wslbak has read it. A full backup made in this mode keeps the part of the list it needs
-  later, the inode of every directory, as `<id>.dirs.gz`.
+  `/run` (or `/dev/shm` where `/run` is not kept in memory), so not on the distro's disk; only root
+  can read it, and it is deleted as soon as wslbak has read it. A run makes one to three such
+  lists, one at a time. A full backup made in this mode keeps the part of the list it needs later,
+  the inode of every directory, as `<id>.dirs.gz`.
 
 ## The test restore
 
@@ -357,8 +375,9 @@ JSON format. The URL is treated as a secret: only its host name is shown or logg
 not a URL at all is shown back to you in the error message). Notifications say
 what kind of problem occurred but never include file names; the details stay in the log on your PC.
 
-A scheduled run that finds another wslbak still running after 20 hours raises a notification too,
-because a run that is stuck cannot (see [Safeguards](#safeguards)).
+A scheduled run that finds another wslbak still there after 20 hours raises a notification too,
+because one that is stuck, or a window left waiting at a question, cannot (see
+[Safeguards](#safeguards)).
 
 `wslbak status` exits 1 and says so when the last success is more than two days old, when the task is
 missing, or when the installed program has disappeared.
@@ -377,8 +396,8 @@ missing, or when the installed program has disappeared.
 - A full backup is not deleted while a differential that passed its check depends on it.
 - `restore` refuses a name that is in use and a folder that is not empty, for distros and for files.
 - The scripts that run inside your distro never delete anything of yours, and use nothing beyond the
-  shell, coreutils and tar. (With differential backups on, the backup script removes the one
-  temporary file it wrote itself under `/run`.) What you type for `--path`, `--into` and `--exclude` never becomes part of a
+  shell, coreutils and tar. (With differential backups on, the backup script removes the
+  temporary file it wrote itself for each list of names.) What you type for `--path`, `--into` and `--exclude` never becomes part of a
   command line that a shell interprets: `--path` does not enter the distro at all, and the other two
   arrive as data and are only handed on as single arguments (to `tar --exclude=…`, and to the
   commands that check and fill the target folder).
@@ -395,14 +414,23 @@ missing, or when the installed program has disappeared.
   `restore --path` or `uninstall` exits with code 3 (a scheduled run that finds another one at work
   simply ends). Commands that only read, and restoring a whole distro as a new one, are not held
   back.
-- A run that never ends does not go unnoticed. When a scheduled run finds that another wslbak has
-  been running for 20 hours or more, it does not simply end: it fails with exit code 2 and notifies
-  you that a backup is probably stuck, because the stuck one cannot do that itself.
+- A wslbak that never ends does not go unnoticed. When a scheduled run finds that another wslbak has
+  held things up for 20 hours or more, it does not simply end: it fails with exit code 2 and
+  notifies you, because the one that is stuck cannot do that itself. This is for a wslbak that was
+  started by hand, a window left waiting at a question included. A run started by the schedule
+  cannot last that long: Windows ends it after 12 hours, which is the task's time limit, and
+  nothing is reported then. What shows it is how long ago the last success was, in
+  `wslbak status`, which warns once that is two days.
 - A WSL that has stopped answering does not leave wslbak waiting for ever. Every WSL command has a
-  time limit (for the backup itself: ten minutes without any data arriving); when it runs out,
-  wslbak ends the command and reports the failure. If the command cannot even be ended, wslbak stops
-  waiting about half a minute later and still reports the failure. That last case cannot be produced
-  on demand, so only its logic is tested.
+  time limit. For the backup itself it is ten minutes without any data arriving, counted from the
+  moment the command starts, so also when not even the beginning of the archive comes; for the
+  pass that lists the names in differential mode it is an hour in all. When a limit runs out,
+  wslbak ends the command. A backup that ran out of time is reported as failed; a list that did is
+  followed by a full backup instead of a differential, which makes its own list first. So in
+  differential mode the limits add up: a WSL that does not answer at all is reported after a little
+  over two hours, not after ten minutes. If the command cannot even be ended, wslbak stops waiting
+  for it about half a minute later and carries on in the same way. That last case cannot be
+  produced on demand, so only its logic is tested.
 
 ## How it works
 
@@ -464,8 +492,20 @@ the last 20 hours.
     changed.
   - A file that changed at all is stored again as a whole, a large database or disk image included.
   - A differential is worth nothing without its full backup. If the full backup is damaged or
-    deleted by hand, its differentials cannot be restored as a distro (`list` marks them, and
-    single files can still be taken out of their archives with tar).
+    deleted by hand, its differentials cannot be restored as a distro. `list` marks them once the
+    full backup's files are gone; damage to its archive shows at `verify`, at `restore`, or at the
+    next test restore of the two together. Single files can still be taken out of such a
+    differential's archive with tar, but do it soon: the next run keeps at most the newest two
+    of them.
+  - Things that happen while a differential is being made are caught as far as they can be told
+    from what tar saw (see the reasons for a full backup above). One case is not: a folder without
+    sub-folders that is moved in from an excluded path during those minutes is an empty folder in
+    that one restore point. The next run notices it and makes a full backup.
+  - `restore --path` with a folder that has very many sub-folders is slower from a differential
+    restore point than from a full backup. The folders arrive before their files there, so tar
+    has to set their times at the end, and the GNU tar of current distros (1.34 and 1.35, not
+    1.30 and older) takes time for that which grows with the square of their number: on this PC
+    3 seconds for 40,000 folders and 12 seconds for 80,000.
 - **GNU tar is required inside the distro.** A distro with BusyBox tar (Alpine as it comes) or with no
   tar (openSUSE Tumbleweed as it comes) is refused, with the command that installs it.
 - **Only what is on the root file system.** A folder mounted from another disk is skipped.
@@ -499,7 +539,7 @@ the last 20 hours.
   before wslbak had started. The freezing is put down to those machines, not to wslbak: of 54
   machines of the same kind that only set WSL up, with no wslbak on them, one froze as well, while
   108 machines that switched Defender on and did not use WSL all kept running. With 0.2.0 the suite
-  has run there three more times and passed each time. The arm64 executables
+  has passed there every time it ran. The arm64 executables
   start and pass the unit tests on arm64 Windows, where no WSL was available to back up. Not tried
   yet: Windows 10 itself, a PC with Docker Desktop, and distros of 100 GB or more; reports are
   welcome, as [issues](https://github.com/Boring206/wslbak/issues).
@@ -531,10 +571,16 @@ Start with `wslbak doctor`.
 - **`.exe` files stop working inside WSL ("Exec format error") after another distro stops.** This is
   not caused by wslbak: some distros clear a kernel setting that all your distros share when they
   shut down. It has been seen with Fedora 44, openSUSE Tumbleweed and Rocky Linux 9. It can show up after a backup
-  because a backup starts a stopped distro, which then stops again. `wsl --shutdown` fixes it, or, without restarting, from a Windows terminal:
-  `wsl -u root sh -c "echo ':WSLInterop:M::MZ::/init:P' > /proc/sys/fs/binfmt_misc/register"`.
-- **"cannot run Windows programs" inside WSL.** Windows interop is disabled; check `[interop]` in
-  `/etc/wsl.conf`, or use wslbak from Windows instead.
+  because a backup starts a stopped distro, which then stops again. `wsl --shutdown` fixes it, or,
+  without restarting, from a Windows terminal, with the name of the distro you are working in:
+  `wsl -d <distro> -u root sh -c "echo ':WSLInterop:M::MZ::/init:P' > /proc/sys/fs/binfmt_misc/register"`.
+  (Without `-d` the command runs in the default distro. If that one is not running, it is started
+  and stops again, which can clear the setting once more.)
+- **"cannot start Windows programs right now" inside WSL.** wslbak looks for the kernel setting
+  that hands `.exe` files to Windows before it starts its program, and did not find it. If Windows
+  programs worked a moment ago, it is the case above, and the same command puts the setting back. If
+  they never did, interop is disabled: check `[interop]` in `/etc/wsl.conf`, or use wslbak from
+  Windows instead.
 - **In Git Bash, `--path`, `--into` and `files <path>` are refused as Windows paths.** Git Bash
   rewrites arguments that look like Linux paths (`/home/me` becomes `C:/Program Files/Git/home/me`)
   before wslbak sees them; wslbak notices and says so. Put `MSYS_NO_PATHCONV=1` in front of the

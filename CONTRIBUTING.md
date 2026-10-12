@@ -46,8 +46,10 @@ Before sending a change, please also run what the `lint` job runs: `gofmt -l .`,
   as text to be parsed.
 - **The scripts that run inside the distro** use only the shell, coreutils and tar (no awk, sed,
   grep, perl, python), never `rm -r`, and end with `main "$@" </dev/null`. A test checks their shape.
-  They write nothing to the distro's disk; the one temporary file (tar's listing, for differential
-  backups) goes under `/run` and is removed by the script that made it.
+  The backup scripts write nothing to the distro's disk; the temporary file for tar's listing
+  (differential backups) goes under `/run` or `/dev/shm` and is removed by the script that made
+  it. Only `restorefiles.sh` creates something on the disk: the folder that the files asked for
+  are unpacked in.
 - **A differential backup is only kept when it can be shown to be right.** `diff.go` has to account
   for every file in the listing: it is in the differential, or it is in the full backup at the same
   path, in a directory that is still the same directory. Whatever cannot be accounted for makes

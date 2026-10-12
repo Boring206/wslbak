@@ -70,7 +70,7 @@ func main() {
 			{"bin/wslbak-" + arch + ".exe", "wslbak.exe"},
 			{"bin/wslbakw-" + arch + ".exe", "wslbakw.exe"},
 			{"README.md", "README.md"},
-			{"README.zh-TW.md", "README.zh-TW.md"},
+			{"README-zh-TW.md", "README-zh-TW.md"},
 			{"LICENSE", "LICENSE"},
 		})
 		lines = append(lines, sums[arch]+"  "+name)

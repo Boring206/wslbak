@@ -128,6 +128,8 @@ func whyText(why string) string {
 		return T.WhyListing
 	case whyMoved:
 		return T.WhyMoved
+	case whyChanging:
+		return T.WhyChanging
 	}
 	return T.WhyStructure
 }
@@ -196,6 +198,8 @@ func cmdRun(opts options) int {
 
 	cfg, err := loadConfig()
 	if err != nil {
+		// 排程執行時沒有畫面：設定檔讀不了的話，至少在紀錄檔留下原因。
+		logf("run: the settings cannot be loaded: %v", err)
 		return fail(err)
 	}
 	if cfg == nil {
@@ -288,7 +292,11 @@ func runOne(opts options, cfg *config, name string, distros []regDistro, wsl str
 			}
 		}
 		if doVerify {
-			fmt.Println("  " + T.DryRunWouldVerify)
+			if chooseVerify(next, existing, time.Now()) == verifyModeCheck {
+				fmt.Println("  " + T.DryRunWouldCheck)
+			} else {
+				fmt.Println("  " + T.DryRunWouldVerify)
+			}
 		}
 		// 這次備份如果通過試還原，會擠掉哪些舊的。
 		planned := append(existing, next)
@@ -394,8 +402,12 @@ func runOne(opts options, cfg *config, name string, distros []regDistro, wsl str
 	case result == resultUnverified && message != "":
 		notify(cfg, fmt.Sprintf(T.NotifyUnverifiedTitle, name), message)
 	case result == resultOK && cfg.Notify.On == notifyAlways:
+		// 說的要是實際做過的事：試還原、輕量檢查，或什麼都沒檢查（試還原被關掉）。
 		body := T.NotifyOKBody
-		if m.Verify != nil && m.Verify.Mode == verifyModeCheck {
+		switch {
+		case m.Verify == nil:
+			body = T.NotifyOKUnchecked
+		case m.Verify.Mode == verifyModeCheck:
 			body = T.NotifyOKChecked
 		}
 		notify(cfg, fmt.Sprintf(T.NotifyOKTitle, name), fmt.Sprintf(body, m.ID, humanBytes(m.Size)))
@@ -535,13 +547,21 @@ func cmdStatus(opts options) int {
 			code = 1
 		}
 		backups := listBackups(filepath.Join(dc.Dest, name))
-		verified := 0
+		verified, checkedOnly := 0, 0
 		for _, m := range backups {
 			if m.verified() {
 				verified++
+				if m.Verify != nil && m.Verify.Mode == verifyModeCheck {
+					checkedOnly++
+				}
 			}
 		}
-		fmt.Printf("  "+T.StatusCounts+"\n", len(backups), verified, dc.Keep)
+		// 算進來的若有只做過輕量檢查的差異，就不能說它們都「通過試還原」。
+		counts := T.StatusCounts
+		if checkedOnly > 0 {
+			counts = T.StatusCountsCheck
+		}
+		fmt.Printf("  "+counts+"\n", len(backups), verified, dc.Keep)
 		switch {
 		case st.LastSuccess.IsZero():
 			fmt.Println("  " + yellow(T.StatusNeverSucceeded))

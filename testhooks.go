@@ -36,7 +36,22 @@ const (
 	envTestClockShift = "WSLBAK_TEST_CLOCK_SHIFT_SECONDS"
 	// 基準時間往前留的那一段改成這麼多秒。平常是五分鐘：測試不能等那麼久才讓一個檔案算「舊的」。
 	envTestSinceMargin = "WSLBAK_TEST_SINCE_MARGIN_SECONDS"
+	// 備份用的腳本一開始先等這麼多秒才做事：這段時間 distro 一個位元組都不會送出來，
+	// 就像 WSL 沒有回應一樣。
+	envTestStartDelay = "WSLBAK_TEST_START_DELAY_SECONDS"
 )
+
+// withTestStartDelay 見 envTestStartDelay。放進腳本的是我們自己轉出來的數字，不是環境變數的原文。
+func withTestStartDelay(script string) string {
+	if homeOverride == "" {
+		return script
+	}
+	n, err := strconv.Atoi(os.Getenv(envTestStartDelay))
+	if err != nil || n <= 0 || n > 3600 {
+		return script
+	}
+	return "sleep " + strconv.Itoa(n) + "\n" + script
+}
 
 // currentSinceMargin 是基準時間往前留的那一段（秒）；沙箱裡可以用環境變數改短。
 func currentSinceMargin() int64 {

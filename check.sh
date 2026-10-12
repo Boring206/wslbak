@@ -100,7 +100,7 @@ main() {
 				case $line in
 				*": OK") ok=$((ok + 1)) ;;
 				*)
-					if rewritten "${line%%: FAILED*}"; then
+					if rewritten "${line%: FAILED*}"; then
 						skipped=$((skipped + 1))
 					else
 						bad=$((bad + 1))

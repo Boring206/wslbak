@@ -11,7 +11,7 @@
 // so this check fails there: publish from Linux.
 
 import { spawnSync } from 'node:child_process';
-import { chmodSync, readFileSync } from 'node:fs';
+import { chmodSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,6 +22,16 @@ const exes = pkg.files.filter((name) => name.endsWith('.exe'));
 const wanted = [...exes, ...Object.values(pkg.bin)];
 
 for (const name of exes) chmodSync(join(root, name), 0o755);
+
+// npm shows one README on the package page: the first file named README or README.* that its
+// search of this folder returns, in an order that depends on the file system. With two such
+// files the page of 0.1.1 came out in Chinese only. The Chinese README is therefore called
+// README-zh-TW.md, and nothing else here may match.
+const readmes = readdirSync(root).filter((name) => /^readme(\..*)?$/i.test(name));
+if (readmes.length !== 1 || readmes[0] !== 'README.md') {
+  console.error(`README.md has to be the only file named README or README.* here; found: ${readmes.join(', ') || 'none'}`);
+  process.exit(1);
+}
 
 // What npm reports here is what ends up in the tarball: it packs each file with the mode it
 // has on disk, less the write bits for group and others.

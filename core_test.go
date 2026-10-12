@@ -1233,7 +1233,7 @@ func TestSelection(t *testing.T) {
 
 func TestExtractArgs(t *testing.T) {
 	link := "/.wslbak-restore-0123456789abcdef"
-	args := extractArgs("Ubuntu", "tar", link, nil)
+	args := extractArgs("Ubuntu", "tar", link, nil, false)
 	joined := strings.Join(args, " ")
 	for _, want := range []string{"-d Ubuntu -u root -e env LC_ALL=C tar", "--extract", "--file=-", "--directory=" + link,
 		"--numeric-owner", "--keep-old-files", "--xattrs", "--xattrs-include=*", "--acls"} {
@@ -1241,11 +1241,18 @@ func TestExtractArgs(t *testing.T) {
 			t.Errorf("extract arguments lack %q: %s", want, joined)
 		}
 	}
+	// 目錄的時間留到最後才設，只有差異的還原點需要；完整備份的命令列和以前一樣。
+	if strings.Contains(joined, "--delay-directory-restore") {
+		t.Errorf("a full restore point does not need --delay-directory-restore: %s", joined)
+	}
+	if joined := strings.Join(extractArgs("Ubuntu", "tar", link, nil, true), " "); !strings.Contains(joined, "--keep-old-files --delay-directory-restore --xattrs") {
+		t.Errorf("a differential restore point needs --delay-directory-restore: %s", joined)
+	}
 	// 備份時這個 distro 的 tar 不支援的選項，解開時也不能用。
-	if joined := strings.Join(extractArgs("Ubuntu", "tar", link, []string{"--acls"}), " "); strings.Contains(joined, "--acls") || !strings.Contains(joined, "--xattrs") {
+	if joined := strings.Join(extractArgs("Ubuntu", "tar", link, []string{"--acls"}, false), " "); strings.Contains(joined, "--acls") || !strings.Contains(joined, "--xattrs") {
 		t.Errorf("with --acls dropped: %s", joined)
 	}
-	if joined := strings.Join(extractArgs("Ubuntu", "tar", link, []string{"--acls", "--xattrs"}), " "); strings.Contains(joined, "--acls") || strings.Contains(joined, "--xattrs") {
+	if joined := strings.Join(extractArgs("Ubuntu", "tar", link, []string{"--acls", "--xattrs"}, false), " "); strings.Contains(joined, "--acls") || strings.Contains(joined, "--xattrs") {
 		t.Errorf("with --xattrs dropped: %s", joined)
 	}
 	// 腳本回報的連結要是我們自己的格式才會被用在命令列上。
@@ -1302,12 +1309,41 @@ func TestStderrLogIgnoresWSLNotes(t *testing.T) {
 	} {
 		l.add(line)
 	}
-	if len(l.notes) != 2 || len(l.tar) != 1 || l.totals != 10240 || len(l.proto) != 3 {
-		t.Errorf("notes=%d tar=%q totals=%d proto=%d", len(l.notes), l.tar, l.totals, len(l.proto))
+	if len(l.notes) != 2 || l.totals != 10240 || len(l.proto) != 3 {
+		t.Errorf("notes=%d totals=%d proto=%d", len(l.notes), l.totals, len(l.proto))
 	}
-	warnings, fatal := classifyTarStderr(l.tar)
-	if len(warnings) != 1 || len(fatal) != 0 {
-		t.Errorf("warnings=%q fatal=%q", warnings, fatal)
+	if l.warningCount != 1 || len(l.warnings) != 1 || l.fatalCount != 0 || l.first != "tar: ./home/me: file changed as we read it" {
+		t.Errorf("warnings=%d %q fatal=%d first=%q", l.warningCount, l.warnings, l.fatalCount, l.first)
+	}
+}
+
+// tar 的訊息再多，排在後面的錯誤也不能漏掉：一大串無害的警告之後出現讀取錯誤，這次備份就是失敗。
+func TestStderrLogKeepsLateErrors(t *testing.T) {
+	var l stderrLog
+	for i := 0; i < 5000; i++ {
+		l.add(fmt.Sprintf("tar: ./var/cache/big/f%d: File removed before we read it", i))
+	}
+	l.add("tar: ./var/lib/app/data.db: Read error at byte 0, while reading 10240 bytes: Input/output error")
+	l.add("tar: Exiting with failure status due to previous errors")
+	if l.warningCount != 5000 || len(l.warnings) != maxWarnings {
+		t.Errorf("warnings: counted %d, kept %d; want 5000 counted, %d kept", l.warningCount, len(l.warnings), maxWarnings)
+	}
+	if l.fatalCount != 1 || len(l.fatal) != 1 || !strings.Contains(l.fatal[0], "Input/output error") {
+		t.Errorf("fatal: counted %d, kept %q; want the read error", l.fatalCount, l.fatal)
+	}
+	if tarExitOK(2, l.warningCount, l.fatalCount) {
+		t.Error("a read error after 5000 harmless lines must fail the backup")
+	}
+	// 沒有那一行錯誤時，同樣的結束碼是可以接受的。
+	if !tarExitOK(2, l.warningCount, 0) {
+		t.Error("exit code 2 with only harmless lines should pass")
+	}
+	// 錯誤行本身也只留前幾行，數量照算。
+	for i := 0; i < 100; i++ {
+		l.add(fmt.Sprintf("tar: ./x%d: Cannot open: Permission denied", i))
+	}
+	if l.fatalCount != 101 || len(l.fatal) != maxFatalKept {
+		t.Errorf("fatal: counted %d, kept %d; want 101 counted, %d kept", l.fatalCount, len(l.fatal), maxFatalKept)
 	}
 }
 
@@ -1382,8 +1418,8 @@ func TestTestFaults(t *testing.T) {
 	if got := strings.Join(log.vanished, "|"); got != `./tmp/build/a b.o|./var/lib/x|./odd\nname` {
 		t.Errorf("names that tar found gone: %q", got)
 	}
-	if len(log.tar) != 5 {
-		t.Errorf("%d lines kept for judging the run, want all 5", len(log.tar))
+	if log.warningCount+log.fatalCount != 5 || log.fatalCount != 1 {
+		t.Errorf("%d warnings and %d errors counted for judging the run, want 4 and 1", log.warningCount, log.fatalCount)
 	}
 
 	t.Setenv(envTestAgeHours, "48")
@@ -1502,7 +1538,7 @@ func TestTarProgram(t *testing.T) {
 			t.Errorf("tarProgram(%q) = %q, want %q", c.reported, got, c.want)
 		}
 	}
-	args := extractArgs("NixOS", "/run/current-system/sw/bin/tar", "/.wslbak-restore-0123456789abcdef", nil)
+	args := extractArgs("NixOS", "/run/current-system/sw/bin/tar", "/.wslbak-restore-0123456789abcdef", nil, false)
 	if !slices.Contains(args, "/run/current-system/sw/bin/tar") || slices.Contains(args, "tar") {
 		t.Errorf("the reported tar is not what gets started: %q", args)
 	}
@@ -1586,6 +1622,105 @@ func TestWaitBounded(t *testing.T) {
 	}
 }
 
+// 子行程結束不掉、管線一直不關的時候，卡在讀取上的那一方要能被放出來。
+func TestCloseWhenAbandoned(t *testing.T) {
+	// 被取消之後過了期限，還沒有人說等完了：管線被關掉，卡住的讀取帶著錯誤回來。
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close() // 寫的那一端一直開著，就像握在一個結束不掉的子行程手上
+	read := make(chan error, 1)
+	go func() {
+		_, err := r.Read(make([]byte, 16))
+		read <- err
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	gone := make(chan struct{})
+	go func() {
+		closeWhenAbandoned(ctx, done, 50*time.Millisecond, r)
+		close(gone)
+	}()
+	select {
+	case err := <-read:
+		t.Fatalf("the read returned before anything was cancelled: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-read:
+		if err == nil {
+			t.Error("the read returned without an error although nothing was written")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the read is still blocked after the pipe should have been closed")
+	}
+	<-gone
+
+	// 在期限內等完了的，管線不去動它。
+	r2, w2, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Close()
+	defer w2.Close()
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	done2 := make(chan struct{})
+	gone2 := make(chan struct{})
+	go func() {
+		closeWhenAbandoned(ctx2, done2, time.Hour, r2)
+		close(gone2)
+	}()
+	cancel2()
+	close(done2)
+	select {
+	case <-gone2:
+	case <-time.After(5 * time.Second):
+		t.Fatal("closeWhenAbandoned did not return after the wait was over")
+	}
+	if _, err := w2.Write([]byte("x")); err != nil {
+		t.Errorf("the pipe was closed although the wait had ended in time: %v", err)
+	}
+	// 從頭到尾沒有被取消、也等完了的，同樣不動。
+	gone3 := make(chan struct{})
+	done3 := make(chan struct{})
+	go func() {
+		closeWhenAbandoned(context.Background(), done3, time.Millisecond, r2)
+		close(gone3)
+	}()
+	close(done3)
+	select {
+	case <-gone3:
+	case <-time.After(5 * time.Second):
+		t.Fatal("closeWhenAbandoned did not return for a stream that ended by itself")
+	}
+}
+
+// 抽樣的檔名要能原樣寫進 manifest：不是合法 UTF-8 的不抽，舊版已經寫壞的不拿來比對。
+func TestSampleNamesSurviveTheManifest(t *testing.T) {
+	for name, want := range map[string]bool{
+		"./home/me/notes.txt":        true,
+		"./home/me/中文 檔名.txt":        true,
+		"./home/me/caf\xe9.txt":      false, // Latin-1 的 é，不是合法的 UTF-8
+		"./home/me/\xa4\xa4\xa4\xe5": false, // Big5
+		"./home/me/back\\slash":      false,
+		"./home/me/new\nline":        false,
+	} {
+		if got := plainName(name); got != want {
+			t.Errorf("plainName(%q) = %v, want %v", name, got, want)
+		}
+	}
+	samples := []fileSample{{Path: "./a"}, {Path: "./caf\ufffd.txt"}, {Path: "./b"}}
+	if got := usableSamples(samples); len(got) != 2 || got[0].Path != "./a" || got[1].Path != "./b" {
+		t.Errorf("usableSamples = %+v, want ./a and ./b", got)
+	}
+	sizes := []fileSize{{Path: "./big\ufffd", Size: 1 << 30}, {Path: "./big", Size: 1 << 29}}
+	if got := usableSizes(sizes); len(got) != 1 || got[0].Path != "./big" {
+		t.Errorf("usableSizes = %+v, want ./big", got)
+	}
+}
+
 // 鎖檔裡的開始時間：只認我們自己寫的格式，其他一律當作不知道。
 func TestLockStamp(t *testing.T) {
 	began := time.Date(2026, 10, 10, 19, 30, 0, 0, time.UTC)
@@ -1604,6 +1739,46 @@ func TestLockStamp(t *testing.T) {
 	// 20 小時的門檻要比一天短，隔天同一時間的排程才看得到。
 	if stuckAfter >= 24*time.Hour {
 		t.Errorf("stuckAfter is %v; the next day's run starts just under 24 hours later and would not notice", stuckAfter)
+	}
+}
+
+// 握著鎖的時候鎖檔裡有開始時間，放掉之後沒有：之後握著鎖的若是不寫時間的舊版，
+// 別人讀到的才不會是這一次留下的時間。
+func TestLockStampIsBlankedOnRelease(t *testing.T) {
+	homeOverride = t.TempDir()
+	defer func() { homeOverride = "" }()
+	path, err := lockPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := func() []byte {
+		f, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		buf := make([]byte, lockStampLen)
+		n, _ := f.ReadAt(buf, 1)
+		return buf[:n]
+	}
+	for round := 1; round <= 2; round++ {
+		release, held, err := acquireLock()
+		if err != nil || held {
+			t.Fatalf("round %d: acquireLock: held=%v err=%v", round, held, err)
+		}
+		if _, ok := parseLockStamp(stamp()); !ok {
+			t.Errorf("round %d: no start time in the lock file while the lock is held: %q", round, stamp())
+		}
+		if _, again, _ := acquireLock(); !again {
+			t.Errorf("round %d: a second acquireLock got the lock while it was held", round)
+		}
+		release()
+		if _, ok := parseLockStamp(stamp()); ok {
+			t.Errorf("round %d: the start time is still in the lock file after release: %q", round, stamp())
+		}
+		if lockHeldFor() != 0 {
+			t.Errorf("round %d: lockHeldFor() = %v after release, want 0", round, lockHeldFor())
+		}
 	}
 }
 

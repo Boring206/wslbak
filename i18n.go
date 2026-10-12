@@ -412,6 +412,7 @@ type catalog struct {
 	WhyAlias          string
 	WhyListing        string
 	WhyMoved          string
+	WhyChanging       string
 	WhyStructure      string
 	RunChecking       string
 	RunChecked        string // 耗時, 天數
@@ -428,6 +429,10 @@ type catalog struct {
 	RestoreOrphan     string // 編號, 完整備份的編號
 	RestoreIncomplete string // 名稱
 	NotifyOKChecked   string // 編號, 大小
+	NotifyOKUnchecked string // 編號, 大小
+	ConfigNewer       string
+	DryRunWouldCheck  string
+	StatusCountsCheck string // 總數, 已驗證, 保留
 	StatusDiffLast    string
 	StatusDiffFull    string // 原因
 
@@ -501,7 +506,7 @@ var zhTW = catalog{
 	AskProceed:            "確定嗎？[y/N] ",
 	DryRunNothingDone:     "（--dry-run：以上都沒有實際執行）",
 	AlreadyRunning:        "已經有另一個 wslbak 在執行（可能是排程的備份）。等它結束後再試。",
-	AlreadyRunningLong:    "它已經執行了 %d 小時，很可能卡住了。重新開機（或登出再登入）會結束它。",
+	AlreadyRunningLong:    "它已經執行了 %d 小時。如果它是你開著、正在等你回答的視窗，回答或關掉它就好；否則它很可能卡住了，重新開機（或登出再登入）會結束它。",
 	NotSetUp:              "還沒有設定備份。執行 wslbak init 開始設定。",
 	NothingConfigured:     "沒有啟用備份的 distro。執行 wslbak init 設定。",
 	DistroNotConfigured:   "還沒有替 %[1]s 設定備份。執行 wslbak init -d %[1]s",
@@ -582,7 +587,7 @@ var zhTW = catalog{
 	BackupNotGNUTar:       "這個 distro 的 tar 不是 GNU tar，wslbak 目前只支援 GNU tar。Alpine 可以執行 apk add tar 安裝。",
 	BackupNoStream:        "無法從 distro 取得資料：%s",
 	BackupWriteFailed:     "寫入備份檔失敗：%s",
-	BackupStalled:         "備份中途超過 10 分鐘沒有收到任何資料，已經放棄。",
+	BackupStalled:         "備份時超過 10 分鐘沒有收到任何資料，已經放棄。",
 	BackupTruncated:       "備份的資料沒有完整送達（distro 可能在中途被關閉）。",
 	BackupTarFailed:       "tar 回報錯誤：%s",
 	ReasonNoIndex:         "wslbak 讀不懂這份 tar 的結構，無法試還原",
@@ -596,8 +601,8 @@ var zhTW = catalog{
 	ReasonUser:            "還原出來的 distro 裡找不到原本的預設使用者或家目錄",
 	ReasonSamples:         "還原出來的檔案內容和備份時不同",
 	NotifyFailedTitle:     "wslbak：%s 備份失敗",
-	NotifyStuckTitle:      "wslbak：有一次備份已經執行了 %d 小時",
-	NotifyStuckBody:       "它很可能卡住了；在它結束之前，新的備份無法開始。請重新開機（或登出再登入），然後執行 wslbak run。",
+	NotifyStuckTitle:      "wslbak：另一個 wslbak 已經執行了 %d 小時",
+	NotifyStuckBody:       "在它結束之前，新的備份無法開始。如果它是你開著、正在等你回答的視窗，回答或關掉它就好；否則它很可能卡住了，請重新開機（或登出再登入），然後執行 wslbak run。",
 	NotifyUnverifiedTitle: "wslbak：%s 的備份沒有驗證",
 	NotifyOKTitle:         "wslbak：%s 備份完成",
 	NotifyOKBody:          "%[1]s（%[2]s）已通過試還原。",
@@ -762,6 +767,7 @@ var zhTW = catalog{
 	WhyAlias:            "distro 裡有資料夾被掛載到另一個位置，同一批檔案會出現兩次",
 	WhyListing:          "無法取得 distro 裡的檔案清單（細節在紀錄檔裡）",
 	WhyMoved:            "有資料夾被改名或搬動過，裡面沒變的檔案要重新備份",
+	WhyChanging:         "備份途中有檔案或資料夾出現又消失，無法確認每個檔案都有著落",
 	WhyStructure:        "寫出來的差異沒有通過檢查，已經丟棄（細節在紀錄檔裡）",
 	RunChecking:         "檢查…",
 	RunChecked:          "檢查通過：備份檔完好，它的完整備份也在（%[1]s）。合併後的試還原每 %[2]d 天做一次。",
@@ -778,6 +784,10 @@ var zhTW = catalog{
 	RestoreOrphan:       "%[1]s 是差異備份，但它所依據的完整備份 %[2]s 不在了（或不是當初那一份），沒辦法還原成一個 distro。請改用別份。",
 	RestoreIncomplete:   "還原沒有完成，但 WSL 可能已經建立了不完整的 distro %[1]s。請不要使用它；確認之後自行把它取消註冊（wslbak 不會移除任何 distro）。",
 	NotifyOKChecked:     "%[1]s（%[2]s）已通過檢查。",
+	NotifyOKUnchecked:   "%[1]s（%[2]s）已寫入。試還原已關閉，所以沒有檢查。",
+	DryRunWouldCheck:    "差異寫好後會重讀檢查（這一次不試還原）",
+	StatusCountsCheck:   "%[1]d 份備份，其中 %[2]d 份通過試還原或檢查（保留 %[3]d 份）",
+	ConfigNewer:         "設定檔是較新版本的 wslbak 寫的，這個版本看不懂。請更新 wslbak（npm install -g wslbak 或 scoop update wslbak），或用那個較新的版本把新的設定關掉。",
 	StatusDiffLast:      "差異備份：開啟；上一份是差異備份。",
 	StatusDiffFull:      "差異備份：開啟；上一份是完整備份，因為%s。",
 	RestoreReadme: `這個資料夾是 wslbak 做的 WSL 備份（https://github.com/Boring206/wslbak）
@@ -888,7 +898,7 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	AskProceed:            "Proceed? [y/N] ",
 	DryRunNothingDone:     "(--dry-run: nothing above was actually done)",
 	AlreadyRunning:        "Another wslbak is already running (possibly the scheduled backup). Try again when it has finished.",
-	AlreadyRunningLong:    "It has been running for %d hours, so it is probably stuck. Restarting Windows (or signing out and in again) ends it.",
+	AlreadyRunningLong:    "It has been running for %d hours. If it is a window of yours that waits for an answer, answer or close it; otherwise it is probably stuck, and restarting Windows (or signing out and in again) ends it.",
 	NotSetUp:              "Backups are not set up yet. Run wslbak init to get started.",
 	NothingConfigured:     "No distro is set up for backup. Run wslbak init.",
 	DistroNotConfigured:   "%[1]s is not set up for backup. Run wslbak init -d %[1]s",
@@ -983,8 +993,8 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	ReasonUser:            "the original default user or their home directory is missing from the restored distro",
 	ReasonSamples:         "the contents of restored files differ from what was backed up",
 	NotifyFailedTitle:     "wslbak: backup of %s failed",
-	NotifyStuckTitle:      "wslbak: a backup has been running for %d hours",
-	NotifyStuckBody:       "It is probably stuck, and no new backup can start until it ends. Restart Windows (or sign out and in again), then run wslbak run.",
+	NotifyStuckTitle:      "wslbak: another wslbak has been running for %d hours",
+	NotifyStuckBody:       "No new backup can start until it ends. If it is a window of yours that waits for an answer, answer or close it; otherwise it is probably stuck: restart Windows (or sign out and in again), then run wslbak run.",
 	NotifyUnverifiedTitle: "wslbak: backup of %s was not verified",
 	NotifyOKTitle:         "wslbak: backup of %s finished",
 	NotifyOKBody:          "%[1]s (%[2]s) passed its test restore.",
@@ -1149,6 +1159,7 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	WhyAlias:            "a folder of the distro is mounted at a second place inside it, so the same files appear twice",
 	WhyListing:          "the list of the distro's files could not be read (details are in the log file)",
 	WhyMoved:            "a folder was renamed or moved, and the unchanged files in it have to be backed up again",
+	WhyChanging:         "files or folders came and went while the backup ran, and not every file could be accounted for",
 	WhyStructure:        "the differential that was written did not pass its check and was discarded (details are in the log file)",
 	RunChecking:         "Checking…",
 	RunChecked:          "check passed: the archive is intact and its full backup is in place (%[1]s). A test restore of the two together is done every %[2]d days.",
@@ -1165,6 +1176,10 @@ Exit codes: 0 success; 1 backup written but not verified, or backups are stale; 
 	RestoreOrphan:       "%[1]s is a differential backup, and the full backup %[2]s it was made from is missing (or is not the same file any more), so it cannot be restored as a distro. Choose another backup.",
 	RestoreIncomplete:   "The restore did not finish, but WSL may have created an incomplete distro %[1]s. Do not use it; after checking, unregister it yourself (wslbak never removes a distro).",
 	NotifyOKChecked:     "%[1]s (%[2]s) passed its check.",
+	NotifyOKUnchecked:   "%[1]s (%[2]s) was written. Test restores are switched off, so it was not checked.",
+	DryRunWouldCheck:    "the differential would then be read back and checked (no test restore this time)",
+	StatusCountsCheck:   "%[1]d backup(s), %[2]d of them passed their test restore or check (keeping %[3]d)",
+	ConfigNewer:         "the settings file was written by a newer version of wslbak, which this version cannot read. Update wslbak (npm install -g wslbak, or scoop update wslbak), or switch the new setting off with that newer version.",
 	StatusDiffLast:      "Differential backups: on; the last backup was a differential.",
 	StatusDiffFull:      "Differential backups: on; the last backup was a full one, because %s.",
 	RestoreReadme: `WSL backups made by wslbak (https://github.com/Boring206/wslbak)

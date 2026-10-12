@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -11,6 +12,8 @@ import (
 
 // stuckAfter：握著鎖的那個 wslbak 跑了這麼久，就當它卡住了。
 // 取和 dueAfter 一樣的值，隔天同一時間的排程才看得到（那時它剛好跑了將近 24 小時）。
+// 握這麼久的只會是手動啟動的 wslbak（包括停在問題上等人回答的視窗）：排程自己啟動的那一次，
+// Windows 12 小時後就會結束它（見 schedule.go 的時間上限）。
 const stuckAfter = dueAfter
 
 // lockStampLen 是鎖檔裡那個時間的長度（RFC 3339、UTC、到秒）；長度固定，鎖檔的大小才不會變來變去。
@@ -34,7 +37,7 @@ func parseLockStamp(b []byte) (time.Time, bool) {
 }
 
 // lockHeldFor 回傳握著鎖的那個 wslbak 已經跑了多久。不知道時回傳 0：
-// 鎖檔讀不到，或握著鎖的是不會寫開始時間的舊版。
+// 鎖檔讀不到，或握著鎖的是不會寫開始時間的舊版（放鎖時會把時間擦掉，所以讀到的不會是上一個人留下的）。
 func lockHeldFor() time.Duration {
 	path, err := lockPath()
 	if err != nil {
@@ -92,6 +95,9 @@ func acquireLock() (release func(), held bool, err error) {
 	var written uint32
 	windows.WriteFile(h, []byte(time.Now().UTC().Format(time.RFC3339)), &written, &windows.Overlapped{Offset: 1})
 	return func() {
+		// 放鎖之前把時間擦掉。下一個握著鎖的如果是不寫時間的舊版（0.1.x），
+		// 別的 wslbak 才不會把這一次留下的時間當成它已經跑了那麼久。
+		windows.WriteFile(h, []byte(strings.Repeat(" ", lockStampLen)), &written, &windows.Overlapped{Offset: 1})
 		windows.UnlockFileEx(h, 0, 1, 0, &overlapped)
 		windows.CloseHandle(h)
 	}, false, nil
@@ -112,7 +118,7 @@ func takeLock(opts options) (release func(), exit int, ok bool) {
 		hours := int(running / time.Hour)
 		if opts.scheduled {
 			if running >= stuckAfter {
-				// 上一次的備份到現在還沒結束：它不會自己發通知，之後每天的排程也都會在這裡退出，
+				// 另一個 wslbak 握著鎖到現在還沒結束：它不會自己發通知，之後每天的排程也都會在這裡退出，
 				// 所以由這一次來說。
 				logf("another wslbak has been running for %d hours and is probably stuck; no backup was made", hours)
 				if cfg, err := loadConfig(); err == nil && cfg != nil {

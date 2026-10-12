@@ -47,6 +47,10 @@ NPM_PREFIX="${DEMO_NPM_PREFIX:-$WORK/npm}"
 DEMO_DIR_WIN="$LOCAL_WIN\\wslbak-demo-work\\distro"
 DEST_ROOT=""
 names() { wsl_exe -l -q </dev/null | tr -d '\r' | sed '/^$/d'; }
+# names_known: the list of distros can be believed. When Windows programs stop answering in the
+# middle of a run, wsl.exe prints nothing, and an empty list must not be read as "no distro is
+# registered". The distro this script runs in is always on a list that is real.
+names_known() { names | grep -qxF "$WSL_DISTRO_NAME"; }
 task_rows() { win "$SYS32/schtasks.exe" /Query /FO CSV /NH </dev/null 2>/dev/null | tr -d '\r' | grep -ci '"\\wslbak-S-'; }
 
 # ---- Refuse to start where wslbak, or an earlier run of this script, has left anything.
@@ -96,13 +100,15 @@ remove_install() {
 	fi
 	# Settings and log of the demo's installation. Only config.json, state.json, the log, the
 	# lock and the folder for test restores can be in there.
-	if [ -d "$LOCAL/wslbak" ] && [ -z "$(names | grep '^wslbak-verify-')" ]; then rm -rf "$LOCAL/wslbak"; fi
+	if [ -d "$LOCAL/wslbak" ] && names_known && [ -z "$(names | grep '^wslbak-verify-')" ]; then rm -rf "$LOCAL/wslbak"; fi
 }
 
 cleanup() {
 	remove_install
 	unregister_demo "$DEMO" "$DEMO_DIR_WIN"
-	if names | grep -q "^$DEMO"; then
+	if ! names_known; then
+		echo "the list of distros could not be read; leaving $WORK in place" >&2
+	elif names | grep -q "^$DEMO"; then
 		echo "a demo distro is still registered; leaving $WORK in place" >&2
 	else
 		rm -rf "$WORK"

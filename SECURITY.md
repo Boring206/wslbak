@@ -13,9 +13,10 @@ and what happened. You can expect a first answer within a week.
   only the shell, coreutils and tar. What you type never becomes part of a command line that a shell
   interprets: it arrives as data and is only handed on as single arguments to those commands.
 - A backup writes nothing to the distro's disk. With differential backups switched on, each run
-  writes one temporary file inside the distro: tar's list of the directories and file names, made
-  with `mktemp` under `/run` (memory, readable by root only) and deleted as soon as it has been
-  read. That is the only file the scripts ever remove.
+  writes a temporary file inside the distro for every list it makes (one to three in a run, one at
+  a time): tar's list of the directories and file names, made with `mktemp` under `/run`, or under
+  `/dev/shm` where `/run` is not kept in memory, readable by root only and deleted as soon as it has
+  been read. That is the only file the scripts ever remove.
 - It registers a scheduled task for **your own Windows account** and needs no administrator rights.
 - It can unregister a distro and delete a folder recursively in exactly one place (`fence.go`), and
   only for a temporary distro it created itself. A test checks that no other code can reach that.

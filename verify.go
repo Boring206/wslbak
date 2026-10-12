@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // 試還原：把剛寫好的封存真的匯入成一個暫時的 distro，在裡面檢查，然後移除。
@@ -152,13 +153,35 @@ type verifySource struct {
 	largest []fileSize
 }
 
+// usableSamples 與 usableSizes 挑出名稱還對得回檔案的那些。舊版把不是合法 UTF-8 的檔名也拿來抽樣，
+// 寫進 manifest 時那些位元組被換成 U+FFFD；從磁碟讀回來的名稱已經不是原來的檔案，拿去比對只會誤報。
+func usableSamples(in []fileSample) []fileSample {
+	out := make([]fileSample, 0, len(in))
+	for _, s := range in {
+		if !strings.ContainsRune(s.Path, utf8.RuneError) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func usableSizes(in []fileSize) []fileSize {
+	out := make([]fileSize, 0, len(in))
+	for _, f := range in {
+		if !strings.ContainsRune(f.Path, utf8.RuneError) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // fullSource：完整備份的封存原封不動，只在結尾接上覆寫用的項目。
 func fullSource(m *manifest) (*verifySource, error) {
 	a, err := openArchive(m.archivePath())
 	if err != nil {
 		return nil, err
 	}
-	src := &verifySource{close: a.Close, samples: m.Index.Samples, largest: m.Index.Largest}
+	src := &verifySource{close: a.Close, samples: usableSamples(m.Index.Samples), largest: usableSizes(m.Index.Largest)}
 	src.stream = newOverrideReader(a, m.Index.EndOffset, buildOverrideTail())
 	src.tailStart = func() int64 { return m.Index.EndOffset }
 	src.settle = func(bool) (string, string) {
@@ -223,13 +246,13 @@ func mergedSource(m *manifest) *verifySource {
 		var changed *errArchiveChanged
 		switch {
 		case err == nil:
-			src.samples = append([]fileSample{}, m.Index.Samples...)
+			src.samples = usableSamples(m.Index.Samples)
 			for _, s := range m.base.Index.Samples {
 				if kept[s.Path] {
 					src.samples = append(src.samples, s)
 				}
 			}
-			src.largest = append([]fileSize{}, m.Index.Largest...)
+			src.largest = usableSizes(m.Index.Largest)
 			for _, f := range m.base.Index.Largest {
 				if kept[f.Path] {
 					src.largest = append(src.largest, f)

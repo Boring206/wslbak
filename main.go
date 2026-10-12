@@ -435,6 +435,10 @@ func run(args []string) int {
 }
 
 func fail(err error) int {
+	if errors.Is(err, errNewerConfig) {
+		// 這個錯誤是在還不知道介面語言時就定義的；顯示時換成該語言的說明，並告訴使用者怎麼辦。
+		err = errors.New(T.ConfigNewer)
+	}
 	fmt.Fprintln(os.Stderr, red(fmt.Sprintf(T.ErrorLine, err)))
 	return 2
 }

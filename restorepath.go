@@ -129,12 +129,20 @@ func validInto(p string) bool {
 }
 
 // extractArgs 是在 distro 裡解開檔案用的命令列。除了我們自己產生的暫存資料夾與檢查過的 tar 位置以外，全部是固定的字。
-func extractArgs(distro, tar, staging string, dropped []string) []string {
+// delayDirs 表示送進去的是差異的還原點。
+func extractArgs(distro, tar, staging string, dropped []string, delayDirs bool) []string {
 	args := []string{"-d", distro, "-u", "root", "-e", "env", "LC_ALL=C", tar,
 		"--extract", "--file=-", "--directory=" + staging,
 		"--numeric-owner", "--same-owner", "--same-permissions",
 		// 目的地是空的，本來就沒有東西可以蓋；這個選項確保萬一有，也是報錯而不是覆蓋。
 		"--keep-old-files"}
+	if delayDirs {
+		// 目錄的時間與權限留到最後才設。差異的還原點是「所有目錄在前、檔案在後」的順序送進來的，
+		// 不這樣的話，後到的檔案會把它所在目錄的修改時間變成取回的那一刻。
+		// 完整備份不加：它的順序是 tar 自己寫出來的，每個目錄後面緊跟著它的內容，時間本來就對；
+		// 而 GNU tar 1.34、1.35 加了這個選項之後，花的時間隨目錄數的平方成長。
+		args = append(args, "--delay-directory-restore")
+	}
 	if !slices.Contains(dropped, "--xattrs") {
 		// GNU tar 解開時預設只還原 user.* 的延伸屬性；capabilities 在 security.* 底下。
 		args = append(args, "--xattrs", "--xattrs-include=*")
@@ -300,7 +308,7 @@ func cmdRestorePath(opts options) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), importTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, system32("wsl.exe"), extractArgs(d.Name, tarProgram(reportedTar), staging, m.Dropped)...)
+	cmd := exec.CommandContext(ctx, system32("wsl.exe"), extractArgs(d.Name, tarProgram(reportedTar), staging, m.Dropped, m.isDiff())...)
 	cmd.Dir = systemRoot()
 	cmd.Env = append(os.Environ(), "WSL_UTF8=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}

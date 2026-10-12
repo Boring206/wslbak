@@ -4,8 +4,13 @@
 
 Differential backups: a full backup now and then, and in between only what changed since it. They
 are off by default; nothing changes for a setup that does not switch them on. Also in this release
-are two safeguards against a run that never ends, which were prepared as 0.1.2; that version was
-never published.
+are safeguards against a run that never ends, which were prepared as 0.1.2 (that version was never
+published), and a number of corrections that an examination of the whole program before this
+release turned up.
+
+After updating, run a wslbak command once, for example `wslbak status`: the scheduled task runs a
+copy of the program in a fixed place, and that copy is brought up to date when the new version
+runs a command (`--version`, `--help` and `--dry-run` do not do it).
 
 - `wslbak config --mode diff` switches a distro to differential backups, `--mode full` back.
   `--full-every <days>` says for how long one full backup is built on (default 30), and
@@ -13,28 +18,40 @@ never published.
 - A differential is `<id>.diff.tar.gz`: the files whose content or attributes changed since the full
   backup, and every directory. `list` has a column for the kind. `restore`, `verify`, `files` and
   `restore --path` take a differential like any other backup and put it together with its full
-  backup; a whole distro is still restored with a single `wsl --import`.
+  backup; a whole distro is still restored with a single `wsl --import`, and folders brought back
+  with `restore --path` have their own modification time.
 - A differential is only kept when wslbak can account for every file: it is in the differential, or
   it is unchanged in the full backup, in a directory that is still the same directory. When it
   cannot, that run makes a full backup instead and says why. This happens after an old folder was
   renamed, moved or swapped with another, when a folder of the distro is mounted at a second place
   inside it, when the exclude list or the distro's tar changed, when the clock does not fit the
-  full backup, and on a root file system other than ext4. `wslbak status` shows whether the last
-  backup was a differential and, if not, the reason.
+  full backup, and on a root file system other than ext4. It also happens when, while the backup
+  runs, a file disappears from a folder the full backup has no record of, or an old folder
+  disappears and a new one appears: a new folder cannot be told from an old one that came from a
+  place the full backup did not cover, nor a rename from a deletion and a creation; the reason
+  given for these is that files or folders came and went while the backup ran. `wslbak status`
+  shows whether the last backup was a differential and, if not, the reason.
 - A full backup is test-restored after every run, as before. A differential is read back and
   checked after every run, and test-restored together with its full backup for the first
   differential of each full backup and every seven days; `wslbak verify` always does the real
-  test restore.
+  test restore. With test restores switched off (`--verify none`, or `--no-verify` for one run) a
+  differential is not checked at all.
 - A full backup is never deleted while a differential that passed its check still needs it.
   Otherwise retention counts every backup, full or differential, as one.
 - Full backups are the same archives as before, and 0.1.x can list, test-restore and restore them.
   0.1.x does not show differentials, and deletes nothing in a folder that holds them. It refuses a
   settings file in which differential backups are switched on ("written by a newer version"), until
   `wslbak config --mode full` of this version has switched them off again; the copy of the program
-  in the backup folder needs no settings file to restore.
-- With differential backups on, each run writes one temporary file inside the distro: tar's list of
-  directories and file names, under `/run` (memory, not the distro's disk), removed when it has
-  been read. Without them a backup still writes nothing inside the distro.
+  in the backup folder needs no settings file to restore. Installing 0.1.x again does not by
+  itself change the program the scheduled task runs (an older version leaves a newer copy in
+  place; `wslbak init` of the older version replaces it), and 0.1.x deletes old backups again only
+  once the differentials are gone from the folder. When 0.1.x deletes a full backup that was made
+  in differential mode, the small `<id>.dirs.gz` next to it stays behind, and a `--full-every`
+  setting is lost the first time 0.1.x writes the settings.
+- With differential backups on, a run writes a temporary file inside the distro for each list it
+  makes (one to three, one at a time): tar's list of directories and file names, under `/run`, or
+  `/dev/shm` where `/run` is not kept in memory, so not on the distro's disk; it is removed when it
+  has been read. Without differential backups a backup still writes nothing inside the distro.
 - A test restore no longer fails over the distro's host name. WSL writes `/etc/hostname` every time
   it starts a distro, and in the temporary copy it writes the PC's name, because the copy does not
   get the `hostname` setting of the distro's `wsl.conf`. On a distro with a host name of its own the
@@ -43,17 +60,45 @@ never published.
   its files when there are fewer than 512. It is no longer compared, and where it is a symbolic link
   (NixOS keeps it in `/nix/store`) a difference in the file behind the link is not counted either.
   Found on NixOS, whose `wsl.conf` sets a host name.
-- A scheduled run that finds another wslbak still running after 20 hours now fails (exit code 2) and
-  notifies you that a backup has been running for that many hours and is probably stuck. A run
-  started by hand says so too.
+- A scheduled run that finds another wslbak still there after 20 hours now fails (exit code 2) and
+  notifies you that it has been running for that many hours. A run started by hand says so too.
+  This catches a wslbak that was started by hand and never ended, a window left at a question
+  included; a run started by the schedule is ended by Windows after 12 hours, without a
+  notification. The time this goes by is written into the lock file while a wslbak runs and
+  removed when it ends, so that a 0.1.x holding the lock later is not taken for a stuck run.
+- A backup that receives nothing from the distro at all is given up after ten minutes, like one
+  whose data stops later. Until now the wait for the beginning of the archive had no limit, so a
+  WSL that did not answer when the backup started left wslbak waiting until Windows ended the
+  task.
 - When a WSL command can neither finish nor be ended (which can happen when WSL as a whole stops
   answering), wslbak stops waiting about half a minute after the command's time limit and reports
-  the failure, instead of waiting for ever.
+  the failure, instead of waiting for ever. This includes the backup itself and the listing of
+  names, where wslbak now gives up reading from a command that will not end.
+- An error that tar reports after more than a thousand harmless messages is no longer overlooked.
+  Only the first thousand lines were kept before the run was judged, so a read error behind them
+  did not fail the backup.
+- Files whose names are not valid UTF-8 are no longer among the files picked for comparison. Such
+  a name cannot be written into the backup's record unchanged, so a later `wslbak verify` looked
+  for a file that does not exist, failed, and marked a good backup as failed. Records that already
+  hold such a name are tolerated.
+- With test restores switched off and notifications set to `always`, the notification no longer
+  says that the backup passed its test restore. `wslbak status` says "test restore or check" when
+  a differential only got the lighter check, and `run --dry-run` says that the differential would
+  be read back and checked.
+- Inside WSL, when Windows programs cannot be started (interop switched off, or its kernel setting
+  removed by another distro that shut down), the npm launcher now says so and how to put it back.
+  On most distros it printed the shell's complaints about the bytes of the executable instead.
+- The message about a settings file from a newer version is now in both languages and says what to
+  do, and a scheduled run that cannot load its settings leaves a line in the log.
 - The executables in the npm package are marked executable again. In 0.1.1 they were not; inside
   WSL the launcher then sets the mode itself on every run, which it cannot do when the package was
   installed with `sudo`, so it stopped and asked for a `chmod` by hand.
-- The README says where to report a problem, with a link, and `package.json` gives the bug tracker
-  in the form that package scanners recognise.
+- The README says where to report a problem, with a link, and how to update; `package.json` gives
+  the bug tracker in the form that package scanners recognise.
+- The Traditional Chinese README is now `README-zh-TW.md`. With two files named `README.*`, npm
+  showed one or the other on the package page depending on the machine that published, and the
+  page of 0.1.1 came out in Chinese only. It now shows the English README, which links to the
+  Chinese one.
 - The tour at the top of the README was recorded again with this version, and now shows a
   differential backup as well.
 - The README says what was seen with Avast's sandbox (a second, isolated copy of the program that

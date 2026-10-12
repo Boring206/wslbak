@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf16"
@@ -50,7 +51,7 @@ const waitDelay = 5 * time.Second
 
 // killGrace：逾時把子行程結束掉、也不等它的輸出之後，再等這麼久它還在就不等了。
 // 卡在核心裡的行程是結束不掉的（WSL 整個不回應時，wsl.exe 可能就停在那裡）；
-// 一直等下去的話，我們自己也跟著卡住，握著鎖又不發通知，之後每天的排程都會安靜地跳過。
+// 一直等下去的話，我們自己也跟著卡住，握著鎖又不發通知，直到 Windows 把排程工作結束掉為止。
 const killGrace = 30 * time.Second
 
 // errWontEnd：子行程被要求結束了，卻一直沒有結束。
@@ -71,6 +72,28 @@ func waitBounded(ctx context.Context, wait func() error, grace time.Duration) er
 		return err
 	case <-time.After(grace):
 		return errWontEnd
+	}
+}
+
+// closeWhenAbandoned 等 ctx 被取消之後再過 delay；那時還沒有人說「已經等完了」（done 關閉），就把這些管線
+// 的讀取端關掉。
+//
+// 子行程被要求結束卻結束不了時（WSL 整個不回應時的 wsl.exe 就是這樣），它握著的管線永遠不會關，
+// 讀的那一方會一直卡在讀取上，連 waitBounded 的時限都輪不到。把我們這一端關掉，卡住的讀取會帶著
+// 錯誤回來（在 Windows 上，關閉管線會取消還在等的讀取），呼叫端才走得到 Wait。
+// 正常結束的子行程不受影響：它一結束，管線就讀到結尾，Wait 回來，done 跟著關閉。
+func closeWhenAbandoned(ctx context.Context, done <-chan struct{}, delay time.Duration, pipes ...io.Closer) {
+	select {
+	case <-done:
+		return
+	case <-ctx.Done():
+	}
+	select {
+	case <-done:
+	case <-time.After(delay):
+		for _, pipe := range pipes {
+			pipe.Close()
+		}
 	}
 }
 
@@ -231,6 +254,9 @@ type distroStream struct {
 	ctx        context.Context
 	cmd        *exec.Cmd
 	stderrDone chan struct{}
+	// waited 在 Wait 回來時關閉：之後就不必再替它看著管線了。
+	waited   chan struct{}
+	waitOnce sync.Once
 }
 
 // startInDistro 以 root 在 distro 裡執行腳本（腳本走 stdin）。stdout 留給呼叫端當資料讀，
@@ -259,7 +285,10 @@ func startInDistro(ctx context.Context, distro, script string, onStderr func(lin
 		ctx:        ctx,
 		cmd:        cmd,
 		stderrDone: make(chan struct{}),
+		waited:     make(chan struct{}),
 	}
+	// 被取消之後 wsl.exe 還是不結束的話，讀 stdout 與 stderr 的人不能跟著卡住。
+	go closeWhenAbandoned(ctx, s.waited, waitDelay, stdout, stderr)
 	go func() {
 		defer close(s.stderrDone)
 		r := bufio.NewReaderSize(stderr, 64<<10)
@@ -280,6 +309,7 @@ func startInDistro(ctx context.Context, distro, script string, onStderr func(lin
 
 // Wait 等腳本結束並回傳結束碼。呼叫前要先把 Stdout 讀完，或取消 context。
 func (s *distroStream) Wait() (int, error) {
+	defer s.waitOnce.Do(func() { close(s.waited) })
 	err := waitBounded(s.ctx, func() error {
 		<-s.stderrDone
 		return s.cmd.Wait()

@@ -24,7 +24,7 @@ import (
 // 備份不呼叫 wsl --export（它會先把執行中的 distro 終止）。
 // 改成在 distro 裡以 root 執行 tar，把原始的 tar 從 stdout 送出來，在 Windows 這邊壓縮、算雜湊、寫檔。
 // distro 全程照常運作，它的磁碟不會被寫入。唯一寫進 distro 的東西是差異模式下的清單暫存檔，
-// 放在 /run（記憶體）裡，讀完就刪（見 backup.sh 與 snapshot.go）。
+// 放在 /run（它不在記憶體裡的話改放 /dev/shm），讀完就刪（見 backup.sh 與 snapshot.go）。
 
 const (
 	// stallLimit：這麼久沒有收到任何資料就放棄。備份可以跑很久，所以不設總時間上限，只看有沒有在動。
@@ -101,20 +101,36 @@ var (
 	tarSummary = regexp.MustCompile(`^tar: Exiting with failure status due to previous errors$`)
 )
 
+// tar 寫到 stderr 的一行屬於哪一種。
+type tarLineKind int
+
+const (
+	tarLineFatal   tarLineKind = iota // 真正的錯誤：不在已知的無害種類裡的，一律算這種
+	tarLineBenign                     // 在執行中的系統上正常會出現的警告
+	tarLineSummary                    // 結尾的總結行，本身不帶資訊
+)
+
+func classifyTarLine(line string) tarLineKind {
+	if tarSummary.MatchString(line) {
+		return tarLineSummary
+	}
+	for _, re := range benignTar {
+		if re.MatchString(line) {
+			return tarLineBenign
+		}
+	}
+	return tarLineFatal
+}
+
 // classifyTarStderr 把 tar 寫到 stderr 的訊息分成可以接受的警告與真正的錯誤。
 func classifyTarStderr(lines []string) (warnings, fatal []string) {
-next:
 	for _, line := range lines {
-		if tarSummary.MatchString(line) {
-			continue
+		switch classifyTarLine(line) {
+		case tarLineBenign:
+			warnings = append(warnings, line)
+		case tarLineFatal:
+			fatal = append(fatal, line)
 		}
-		for _, re := range benignTar {
-			if re.MatchString(line) {
-				warnings = append(warnings, line)
-				continue next
-			}
-		}
-		fatal = append(fatal, line)
 	}
 	return warnings, fatal
 }
@@ -123,22 +139,37 @@ next:
 // 0 是成功；1 是「有檔案在讀取時變動」；2 在 live 的系統上也會因為目錄中途被刪而出現，
 // 所以 2 只有在每一行訊息都屬於已知的無害種類時才放行。
 func tarSucceeded(code int, warnings, fatal []string) bool {
+	return tarExitOK(code, len(warnings), len(fatal))
+}
+
+// tarExitOK 和 tarSucceeded 相同，吃的是兩種訊息的行數。
+func tarExitOK(code, warnings, fatal int) bool {
 	switch code {
 	case 0, 1:
-		return len(fatal) == 0
+		return fatal == 0
 	case 2:
-		return len(fatal) == 0 && len(warnings) > 0
+		return fatal == 0 && warnings > 0
 	}
 	return false
 }
 
+// maxFatalKept 是留下來的 tar 錯誤行數上限；判斷成敗看的是總數，留下來的只用來說明。
+const maxFatalKept = 20
+
 // stderrLog 收集腳本寫到 stderr 的內容。
 type stderrLog struct {
-	mu     sync.Mutex
-	proto  [][]string
-	tar    []string
-	notes  []string // wsl.exe 自己的警告
-	totals int64
+	mu    sync.Mutex
+	proto [][]string
+	// first 是 tar（或 sh）說的第一行，不管屬於哪一種：連封存的開頭都沒有來的時候，拿它說明原因。
+	first string
+	// tar 的訊息一到就分類，各自計數，只留前面幾行。先分類再決定留不留：
+	// 一個真正的錯誤不會因為排在上千行無害的警告後面而被丟掉。
+	warnings     []string
+	warningCount int
+	fatal        []string
+	fatalCount   int
+	notes        []string // wsl.exe 自己的警告
+	totals       int64
 	// vanished 是 tar 走到時已經不見的名稱（tar 的寫法，還沒還原跳脫）。
 	vanished []string
 }
@@ -172,9 +203,21 @@ func (l *stderrLog) add(line string) {
 		l.notes = append(l.notes, line)
 		return
 	}
-	// tar 可能對同一個樹印出非常多行，只留前面一些，其餘的只計數。
-	if len(l.tar) < 1000 {
-		l.tar = append(l.tar, line)
+	if l.first == "" {
+		l.first = line
+	}
+	// tar 可能對同一棵樹印出非常多行：每一種都只留前面幾行，其餘的只計數。
+	switch classifyTarLine(line) {
+	case tarLineBenign:
+		l.warningCount++
+		if len(l.warnings) < maxWarnings {
+			l.warnings = append(l.warnings, line)
+		}
+	case tarLineFatal:
+		l.fatalCount++
+		if len(l.fatal) < maxFatalKept {
+			l.fatal = append(l.fatal, line)
+		}
 	}
 }
 
@@ -364,45 +407,24 @@ func runTarPass(p tarPass) (*passResult, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var stderr stderrLog
-	stream, err := startInDistro(ctx, p.Distro, withVars(backupScript, p.Vars...), stderr.add)
+	stream, err := startInDistro(ctx, p.Distro, withTestStartDelay(withVars(backupScript, p.Vars...)), stderr.add)
 	if err != nil {
 		return nil, &backupError{failStart, err.Error()}
 	}
 
-	// 開頭不是 tar：distro 啟動不了、或 distro 裡的 tar 不是 GNU tar。
-	if head, _ := stream.Stdout.Peek(tarBlock); !looksLikeTar(head) {
-		rest, _ := io.ReadAll(io.LimitReader(stream.Stdout, 64<<10))
-		// 不管它還想寫多少都不再讀了；先結束它，Wait 才不會卡在沒人讀的管線上。
-		cancel()
-		code, _ := stream.Wait()
-		if f, ok := protoValue(stderr.proto, "error"); ok && len(f) > 0 && f[0] == "not-gnu-tar" {
-			return nil, &backupError{failNotGNUTar, strings.Join(f[1:], " ")}
-		}
-		detail := plain(firstLine(decodeWSLText(rest)))
-		if len(stderr.tar) > 0 {
-			detail = stderr.tar[0]
-		}
-		return nil, &backupError{failNotTar, fmt.Sprintf("exit %d: %s", code, detail)}
-	}
-
-	res := &passResult{partial: filepath.Join(p.Dir, p.ID+p.Suffix+partialSuffix)}
-	file, err := os.Create(res.partial)
-	if err != nil {
-		cancel()
-		stream.Wait()
-		return nil, &backupError{failWrite, err.Error()}
-	}
-	done := false
-	defer func() {
-		if !done {
-			file.Close()
-			res.discard()
-		}
-	}()
-
+	// 從第一個位元組之前就有人看著：distro 啟動不了、WSL 整個不回應時，連開頭都不會來，
+	// 等開頭的那一步不能沒有時限。讀到的位元組數在這段期間一直是 0，超過時限就照「停住了」處理。
 	progress := &progressReader{r: withTestReadRate(stream.Stdout)}
 	var stalled atomic.Bool
 	finished, watcherGone := make(chan struct{}), make(chan struct{})
+	var stopOnce sync.Once
+	stopWatch := func() {
+		stopOnce.Do(func() {
+			close(finished)
+			<-watcherGone
+		})
+	}
+	defer stopWatch()
 	go func() {
 		defer close(watcherGone)
 		ticker := time.NewTicker(time.Second)
@@ -423,6 +445,41 @@ func runTarPass(p tarPass) (*passResult, error) {
 					return
 				}
 			}
+		}
+	}()
+
+	// 開頭不是 tar：distro 啟動不了、或 distro 裡的 tar 不是 GNU tar。
+	if head, _ := stream.Stdout.Peek(tarBlock); !looksLikeTar(head) {
+		rest, _ := io.ReadAll(io.LimitReader(stream.Stdout, 64<<10))
+		// 不管它還想寫多少都不再讀了；先結束它，Wait 才不會卡在沒人讀的管線上。
+		cancel()
+		code, _ := stream.Wait()
+		stopWatch()
+		if stalled.Load() {
+			return nil, &backupError{failStalled, fmt.Sprintf("no data for %v, not even the first block", currentStallLimit())}
+		}
+		if f, ok := protoValue(stderr.proto, "error"); ok && len(f) > 0 && f[0] == "not-gnu-tar" {
+			return nil, &backupError{failNotGNUTar, strings.Join(f[1:], " ")}
+		}
+		detail := plain(firstLine(decodeWSLText(rest)))
+		if stderr.first != "" {
+			detail = stderr.first
+		}
+		return nil, &backupError{failNotTar, fmt.Sprintf("exit %d: %s", code, detail)}
+	}
+
+	res := &passResult{partial: filepath.Join(p.Dir, p.ID+p.Suffix+partialSuffix)}
+	file, err := os.Create(res.partial)
+	if err != nil {
+		cancel()
+		stream.Wait()
+		return nil, &backupError{failWrite, err.Error()}
+	}
+	done := false
+	defer func() {
+		if !done {
+			file.Close()
+			res.discard()
 		}
 	}()
 
@@ -460,8 +517,7 @@ func runTarPass(p tarPass) (*passResult, error) {
 	if err := file.Sync(); closeErr == nil {
 		closeErr = err
 	}
-	close(finished)
-	<-watcherGone
+	stopWatch()
 	if sink.err != nil || closeErr != nil {
 		// 寫不進去了：不要讓 tar 繼續把整個 distro 讀完。
 		cancel()
@@ -494,11 +550,10 @@ func runTarPass(p tarPass) (*passResult, error) {
 	if stderr.totals != idx.Size {
 		return nil, &backupError{failTruncated, fmt.Sprintf("received %d bytes, tar wrote %d", idx.Size, stderr.totals)}
 	}
-	warnings, fatal := classifyTarStderr(stderr.tar)
-	if !tarSucceeded(code, warnings, fatal) {
+	if !tarExitOK(code, stderr.warningCount, stderr.fatalCount) {
 		detail := fmt.Sprintf("tar exit %d", code)
-		if len(fatal) > 0 {
-			detail += ": " + fatal[0]
+		if len(stderr.fatal) > 0 {
+			detail += ": " + stderr.fatal[0]
 		}
 		return nil, &backupError{failTar, detail}
 	}
@@ -508,8 +563,8 @@ func runTarPass(p tarPass) (*passResult, error) {
 	res.Index, res.ScanErr = idx, scanErr
 	res.Size, res.SHA256 = info.Size(), hex.EncodeToString(sum.Sum(nil))
 	res.Proto, res.Vanished = stderr.proto, stderr.vanished
-	res.WarningCount = len(warnings)
-	res.Warnings = warnings[:min(len(warnings), maxWarnings)]
+	res.WarningCount = stderr.warningCount
+	res.Warnings = stderr.warnings
 	done = true
 	return res, nil
 }

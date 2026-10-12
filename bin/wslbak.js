@@ -36,6 +36,12 @@ function useChinese() {
   return /^zh-(hant|tw|hk|mo)/.test(locale);
 }
 
+// 補回 Windows 互通那筆設定的指令。指名目前這個 distro：不指名的話，wsl.exe 會到預設的 distro 去執行，
+// 它如果沒在執行，會被啟動、隨後又停止，可能再把設定清掉一次。名稱只接受 WSL 允許的字元，其餘的就不帶。
+const here = /^[\w.-]+$/.test(process.env.WSL_DISTRO_NAME || '') ? `-d ${process.env.WSL_DISTRO_NAME} ` : '';
+const repairInterop =
+  `  wsl ${here}-u root sh -c "echo ':WSLInterop:M::MZ::/init:P' > /proc/sys/fs/binfmt_misc/register"\n`;
+
 const messages = {
   en: {
     prefix: 'wslbak: ',
@@ -43,9 +49,12 @@ const messages = {
     missing: (exe) => `cannot find ${exe}\nWhen installing from source, run npm run build first.`,
     noExec: (exe) => `the executable is not marked executable. Run: sudo chmod +x "${exe}"`,
     noInterop:
-      'this WSL cannot run Windows programs (interop is disabled).\n' +
-      'Check that /etc/wsl.conf does not set [interop] enabled=false,\n' +
-      'then run wsl --shutdown on Windows and reopen the distro.\n' +
+      'this WSL cannot start Windows programs right now.\n' +
+      'If it could a moment ago, another distro that shut down has removed the setting that does it.\n' +
+      'Put it back from a Windows terminal with\n' +
+      repairInterop +
+      'or run wsl --shutdown there and reopen the distro.\n' +
+      'If it never could, check that /etc/wsl.conf does not set [interop] enabled=false.\n' +
       'You can also install wslbak with Node on Windows instead.',
     blocked: (exe) =>
       `Windows refused to start ${exe}\n` +
@@ -58,9 +67,12 @@ const messages = {
     missing: (exe) => `找不到執行檔 ${exe}\n從原始碼安裝的話，請先執行 npm run build。`,
     noExec: (exe) => `沒有執行權限，請執行：sudo chmod +x "${exe}"`,
     noInterop:
-      '這個 WSL 無法執行 Windows 程式（interop 沒有啟用）。\n' +
-      '請確認 /etc/wsl.conf 沒有設定 [interop] enabled=false，\n' +
-      '修改後在 Windows 執行 wsl --shutdown 再重新開啟。\n' +
+      '這個 WSL 現在無法執行 Windows 程式。\n' +
+      '剛才還可以的話，是另一個 distro 關閉時把負責這件事的設定清掉了。\n' +
+      '在 Windows 的終端機執行下面這一行可以補回來：\n' +
+      repairInterop +
+      '或在那裡執行 wsl --shutdown 再重新開啟 distro。\n' +
+      '一直都不行的話，請確認 /etc/wsl.conf 沒有設定 [interop] enabled=false。\n' +
       '也可以改用 Windows 上的 Node 安裝 wslbak。',
     blocked: (exe) =>
       `Windows 拒絕執行 ${exe}\n` +
@@ -132,6 +144,30 @@ function translatePaths(list) {
   }
   return out;
 }
+
+// WSL 靠核心裡的一筆設定（binfmt_misc）把 .exe 交給 Windows 執行。那筆設定不在的時候（互通被關掉，
+// 或另一個 distro 關閉時把整張表清掉了），啟動 exe 並不會得到明確的錯誤：glibc 會改拿 /bin/sh 去讀
+// 那支 exe，印出一串亂碼。所以先看它在不在；看不出來（那個資料夾讀不到）就照舊往下走。
+function cannotStartWindowsPrograms() {
+  const dir = '/proc/sys/fs/binfmt_misc';
+  try {
+    const names = fs.readdirSync(dir);
+    // 沒有 register 表示這個資料夾沒有掛上，裡面什麼都看不到。
+    if (!names.includes('register')) return false;
+    if (/^disabled/.test(fs.readFileSync(path.join(dir, 'status'), 'utf8'))) return true;
+    for (const name of names) {
+      if (name === 'register' || name === 'status') continue;
+      const entry = fs.readFileSync(path.join(dir, name), 'utf8');
+      // 啟用中、認得 MZ 開頭（4d5a）的那一筆。WSL 自己的叫 WSLInterop 或 WSLInterop-late；
+      // 叫這個名字又啟用著的，內容長得不一樣也算數，寧可照舊往下走。
+      if (/^enabled$/m.test(entry) && (/^magic 4d5a/m.test(entry) || name.startsWith('WSLInterop'))) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+if (onLinux && cannotStartWindowsPrograms()) fail(text.noInterop);
 
 const forwarded = onLinux ? translatePaths(args) : [...args];
 // 從 WSL 啟動的 Windows 程式看不到 WSL 的環境變數，所以把 WSLBAK_LANG 轉成參數。

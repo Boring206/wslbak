@@ -13,7 +13,7 @@ ShortDescription: Scheduled, verified backups of a WSL distro without stopping i
 Description: |-
   wslbak backs up a WSL2 distro on a schedule while the distro keeps running, test-restores
   every backup as a temporary distro, notifies you when something fails, and restores with one
-  command. Backups are standard .tar.gz archives that wsl --import accepts.
+  command. Full backups are standard .tar.gz archives that wsl --import accepts.
 Tags:
   - wsl
   - wsl2

@@ -31,7 +31,7 @@
     "bin/wslbak-arm64.exe",
     "bin/wslbakw-x64.exe",
     "bin/wslbakw-arm64.exe",
-    "README.zh-TW.md"
+    "README-zh-TW.md"
   ],
   "os": [
     "win32",
