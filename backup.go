@@ -88,7 +88,7 @@ var (
 	totalsRe = regexp.MustCompile(`^Total bytes written: (\d+)`)
 
 	// benignTar 是 live 備份時一定會遇到、不代表備份失敗的 tar 訊息（LC_ALL=C 下的原文）：
-	// 檔案在讀取途中被改寫、被刪除、變短。
+	// 檔案在讀取途中被改寫、被刪除或改名、變短。
 	benignTar = []*regexp.Regexp{
 		regexp.MustCompile(`: file changed as we read it$`),
 		regexp.MustCompile(`: File removed before we read it$`),

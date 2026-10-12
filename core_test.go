@@ -191,7 +191,7 @@ func TestClassifyTarStderr(t *testing.T) {
 		// 查 ACL 或延伸屬性失敗，原因不是「檔案不見了」的，仍然是錯誤。
 		"tar: f64: Warning: Cannot file_has_acl_at: Input/output error",
 		"tar: f64: Warning: Cannot llistxattrat: Permission denied",
-		// 別的操作同樣以「No such file or directory」失敗的，也仍然是錯誤。
+		// 不在清單裡的操作，就算同樣以「No such file or directory」失敗，也仍然是錯誤。
 		"tar: f64: Warning: Cannot seek to 4096: No such file or directory",
 	})
 	if len(fatal) != 7 {

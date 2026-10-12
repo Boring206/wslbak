@@ -2,8 +2,9 @@
 
 ## 0.2.1
 
-One correction to backups of a distro in which files are being deleted, and corrections to what
-the npm launcher says inside WSL when Windows programs cannot be started.
+Two corrections to backups of a distro in which files are deleted, renamed or shortened while the
+backup runs, and corrections to what the npm launcher says inside WSL when Windows programs cannot
+be started.
 
 - A backup failed with "tar reported an error" when a file was deleted or renamed in the instant
   after tar had taken it up: tar then cannot look up its access control list and extended
@@ -15,8 +16,8 @@ the npm launcher says inside WSL when Windows programs cannot be started.
   delete files during a backup, one met it. Every earlier version has the same gap.
 - The same for a file that became exactly one byte shorter while it was read: tar then says "File
   shrank by 1 byte", and only the plural was recognised.
-- The message named `[interop] enabled=false` in `/etc/wsl.conf` as the thing to check when
-  Windows programs never worked. That is the cause in a WSL 1 distro only, and the message now says
+- The launcher's message named `[interop] enabled=false` in `/etc/wsl.conf` as the thing to check
+  when Windows programs never worked. That is the cause in a WSL 1 distro only, and the message now says
   so. In a WSL 2 distro that setting does not lead to this message: the kernel setting the launcher
   looks at stays in place, and WSL itself prints an error after about ten seconds (tried with WSL
   2.7.13). The README describes that case in its own entry.
