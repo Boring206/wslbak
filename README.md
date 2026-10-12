@@ -578,14 +578,16 @@ Start with `wslbak doctor`.
   and stops again, which can clear the setting once more.)
 - **"cannot start Windows programs right now" inside WSL.** wslbak looks at the kernel setting
   that hands `.exe` files to Windows before it starts its program, and it is missing or switched
-  off. A missing one is the case above, and the same command puts it back; `wsl --shutdown`
-  restores it in either case.
-- **Inside WSL, one line of error from WSL after about ten seconds, and nothing else.** This is what
-  happens when Windows interop is switched off for the distro (`[interop] enabled=false` in
-  `/etc/wsl.conf`). WSL itself then fails to start any Windows program and prints its own error. With
-  WSL 2.7.13 that was `ERROR: UtilAcceptVsock:273: accept4 failed 110` after ten seconds, with exit
-  code 1, which is WSL's own and not one of wslbak's. Switch interop back on, or use wslbak from
-  Windows.
+  off. In a WSL 2 distro a missing one is the case above, and the same command puts it back;
+  `wsl --shutdown` restores it in either case. In a WSL 1 distro the setting is missing when
+  `/etc/wsl.conf` has `[interop] enabled=false`.
+- **Inside a WSL 2 distro, one line of error from WSL after about ten seconds, and nothing else.**
+  This is what happens when Windows interop is switched off for the distro (`[interop] enabled=false`
+  in `/etc/wsl.conf`). In WSL 2 the kernel setting stays in place then, so wslbak's check passes, and
+  WSL itself fails to start any Windows program and prints its own error. With WSL 2.7.13 that was
+  `ERROR: UtilAcceptVsock:273: accept4 failed 110` after ten seconds, and the exit code was 1 although
+  wslbak's program never ran: that 1 comes from WSL and has none of the meanings listed under exit
+  codes above. Switch interop back on, or use wslbak from Windows.
 - **In Git Bash, `--path`, `--into` and `files <path>` are refused as Windows paths.** Git Bash
   rewrites arguments that look like Linux paths (`/home/me` becomes `C:/Program Files/Git/home/me`)
   before wslbak sees them; wslbak notices and says so. Put `MSYS_NO_PATHCONV=1` in front of the

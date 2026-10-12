@@ -469,12 +469,14 @@ wslbak 把真正的大小也寫進那個標頭（標頭的檢查碼跟著更正�
   `wsl -d <distro> -u root sh -c "echo ':WSLInterop:M::MZ::/init:P' > /proc/sys/fs/binfmt_misc/register"`。
   （不加 `-d` 的話，指令會在預設的 distro 裡執行；它如果沒在執行，會被啟動、隨後又停止，可能再把這項設定清掉一次。）
 - **在 WSL 裡出現「現在無法執行 Windows 程式」。** wslbak 啟動自己的程式之前，會先看核心裡把 `.exe`
-  交給 Windows 的那筆設定，結果它不見了，或被停用了。不見了就是上一項的情況，用同一個指令可以補回來；
-  `wsl --shutdown` 在兩種情況都能恢復。
-- **在 WSL 裡等了大約十秒，只出現一行 WSL 的錯誤。** 這個 distro 的 Windows 互通被關掉時（`/etc/wsl.conf`
-  裡的 `[interop] enabled=false`）就會這樣。這時 WSL 自己就啟動不了任何 Windows 程式，印出的是它自己的錯誤。
-  在 WSL 2.7.13 上實測，是等了十秒後印出 `ERROR: UtilAcceptVsock:273: accept4 failed 110`，結束碼是 1
-  （這是 WSL 自己給的，不是 wslbak 的結束碼）。請把互通開回來，或改從 Windows 使用 wslbak。
+  交給 Windows 的那筆設定，結果它不見了，或被停用了。在 WSL 2 的 distro 裡，不見了就是上一項的情況，
+  用同一個指令可以補回來；`wsl --shutdown` 在兩種情況都能恢復。在 WSL 1 的 distro 裡，`/etc/wsl.conf` 設了
+  `[interop] enabled=false` 的時候就不會有這筆設定。
+- **在 WSL 2 的 distro 裡等了大約十秒，只出現一行 WSL 的錯誤。** 這個 distro 的 Windows 互通被關掉時
+  （`/etc/wsl.conf` 裡的 `[interop] enabled=false`）就會這樣。WSL 2 這時那筆核心設定還在，wslbak 的檢查會通過，
+  接著 WSL 自己啟動不了任何 Windows 程式，印出的是它自己的錯誤。在 WSL 2.7.13 上實測，是等了十秒後印出
+  `ERROR: UtilAcceptVsock:273: accept4 failed 110`，結束碼是 1，但 wslbak 的程式其實沒有執行：這個 1 是 WSL 給的，
+  不是前面結束碼說明裡的任何一種意思。請把互通開回來，或改從 Windows 使用 wslbak。
 - **在 Git Bash 裡，`--path`、`--into` 與 `files <路徑>` 會被當成 Windows 路徑而拒絕。** Git Bash 會把看起來像
   Linux 路徑的參數改寫掉（`/home/me` 變成 `C:/Program Files/Git/home/me`），wslbak 收到的已經是改過的；
   它會發現並告訴你。在指令前面加上 `MSYS_NO_PATHCONV=1`，或改用 PowerShell、cmd 或 WSL 的 shell。

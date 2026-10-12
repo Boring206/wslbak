@@ -5,12 +5,16 @@
 Corrections to what the npm launcher says inside WSL when Windows programs cannot be started.
 Nothing else changes.
 
-- The message no longer points at `[interop] enabled=false` in `/etc/wsl.conf`. That setting does
-  not lead to this message: the kernel setting the launcher looks at stays in place, and WSL itself
-  prints an error after about ten seconds (tried with WSL 2.7.13). The README now describes that
-  case in its own entry.
-- The command the message prints puts back a setting that is missing. For one that is switched off
-  it does nothing, and the message now says so; `wsl --shutdown` restores it in either case.
+- The message named `[interop] enabled=false` in `/etc/wsl.conf` as the thing to check when
+  Windows programs never worked. That is the cause in a WSL 1 distro only, and the message now says
+  so. In a WSL 2 distro that setting does not lead to this message: the kernel setting the launcher
+  looks at stays in place, and WSL itself prints an error after about ten seconds (tried with WSL
+  2.7.13). The README describes that case in its own entry.
+- The command the message prints puts back a setting that is missing in a WSL 2 distro. It does
+  not help with one that is switched off, and the message now offers it for a missing one only;
+  `wsl --shutdown` restores it in either case.
+- When the kernel setting is in place but the program it names cannot be found, the launcher printed
+  the same message, which is not true of that state. It now says what it found.
 
 ## 0.2.0
 

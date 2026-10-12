@@ -51,10 +51,15 @@ const messages = {
     noInterop:
       'this WSL cannot start Windows programs right now.\n' +
       'The kernel setting that hands .exe files to Windows is missing or switched off.\n' +
-      'A distro that shuts down can remove it for every distro. A missing one is put back from a Windows terminal with\n' +
+      'In a WSL 2 distro, a distro that shuts down can remove it for every distro. A missing one is put back from a Windows terminal with\n' +
       repairInterop +
       'Running wsl --shutdown there and reopening the distro restores it in either case.\n' +
+      'In a WSL 1 distro, the setting is missing when /etc/wsl.conf has [interop] enabled=false.\n' +
       'You can also install wslbak with Node on Windows instead.',
+    noInit: (exe) =>
+      `cannot start ${exe}\n` +
+      'The system reports a missing file, and the executable itself is there.\n' +
+      'What is missing, then, is the program that the kernel hands .exe files to (/init in WSL): it cannot be reached from here.',
     blocked: (exe) =>
       `Windows refused to start ${exe}\n` +
       'The program is not code-signed, so Smart App Control, an antivirus, or an AppLocker policy may be blocking it.\n' +
@@ -68,10 +73,15 @@ const messages = {
     noInterop:
       '這個 WSL 現在無法執行 Windows 程式。\n' +
       '核心裡把 .exe 交給 Windows 的那筆設定不見了，或被停用了。\n' +
-      '有些 distro 關閉時會把它清掉，所有 distro 都受影響。不見了的話，在 Windows 的終端機執行下面這一行可以補回來：\n' +
+      'WSL 2 的 distro：有些 distro 關閉時會把它清掉，所有 distro 都受影響。不見了的話，在 Windows 的終端機執行下面這一行可以補回來：\n' +
       repairInterop +
       '兩種情況都可以在那裡執行 wsl --shutdown，再重新開啟 distro 來恢復。\n' +
+      'WSL 1 的 distro：/etc/wsl.conf 設了 [interop] enabled=false 的時候，就不會有這筆設定。\n' +
       '也可以改用 Windows 上的 Node 安裝 wslbak。',
+    noInit: (exe) =>
+      `無法啟動 ${exe}\n` +
+      '系統回報找不到檔案，但執行檔本身在。\n' +
+      '那麼找不到的是核心用來執行 .exe 的那支程式（WSL 裡是 /init）：從這裡碰不到它。',
     blocked: (exe) =>
       `Windows 拒絕執行 ${exe}\n` +
       '這支程式沒有程式碼簽章，可能被智慧型應用程式控制、防毒軟體或 AppLocker 原則擋下。\n' +
@@ -146,8 +156,9 @@ function translatePaths(list) {
 // WSL 靠核心裡的一筆設定（binfmt_misc）把 .exe 交給 Windows 執行。那筆設定不在的時候（另一個 distro
 // 關閉時把整張表清掉了），或被人停用的時候，啟動 exe 並不會得到明確的錯誤：glibc 會改拿 /bin/sh 去讀
 // 那支 exe，印出一串亂碼。所以先看它在不在；看不出來（那個資料夾讀不到）就照舊往下走。
-// 在 /etc/wsl.conf 關掉互通（[interop] enabled=false）是另一回事：那筆設定還在，這裡看不出來，
-// WSL 自己會在大約十秒後印出錯誤。
+// 在 /etc/wsl.conf 關掉互通（[interop] enabled=false）的結果，兩種 WSL 不一樣（都實測過）：
+// WSL 1 每個 distro 有自己的一筆設定，關掉互通就不會有，這裡看得出來；
+// WSL 2 的設定是整台虛擬機共用的，關掉互通它還在，這裡看不出來，WSL 自己會在大約十秒後印出錯誤。
 function cannotStartWindowsPrograms() {
   const dir = '/proc/sys/fs/binfmt_misc';
   try {
@@ -179,7 +190,9 @@ const result = spawnSync(exe, forwarded, { stdio: 'inherit' });
 if (result.error) {
   const code = result.error.code;
   if (onLinux && code === 'EACCES') fail(text.noExec(exe));
-  if (onLinux && (code === 'ENOEXEC' || code === 'ENOENT')) fail(text.noInterop);
+  if (onLinux && code === 'ENOEXEC') fail(text.noInterop);
+  // exe 在（前面確認過），卻回報找不到檔案：找不到的是那筆設定指名的程式。
+  if (onLinux && code === 'ENOENT') fail(text.noInit(exe));
   if (!onLinux && (code === 'EACCES' || code === 'EPERM' || code === 'UNKNOWN')) fail(text.blocked(exe));
   fail(result.error.message);
 }
