@@ -168,14 +168,19 @@ func TestClassifyTarStderr(t *testing.T) {
 		"tar: ./var/lib/app/tmp123: Cannot stat: No such file or directory",
 		"tar: ./home/user/db.sqlite-wal: File shrank by 4096 bytes; padding with zeros",
 		"tar: ./home/user/mnt: Cannot stat: Permission denied",
-		// 這兩行是 GNU tar 1.35 實際印出來的（一邊建立、刪除檔案，一邊用 --acls --xattrs 打包）：
-		// 檔案在打開之後被刪掉，tar 只印檔名，不帶路徑。
+		// 以下四行是 GNU tar 1.35 實際印出來的。
+		// 一邊建立、刪除檔案，一邊用 --acls --xattrs 打包：檔案在 tar 看過它之後被刪掉
+		// （這個檔案是空的，tar 沒有打開它）；tar 只印檔名，不帶路徑。
 		"tar: f64: Warning: Cannot file_has_acl_at: No such file or directory",
 		"tar: f64: Warning: Cannot llistxattrat: No such file or directory",
+		// 帶著 ACL 的檔案在 tar 看過它之後被改名。
+		"tar: b46: Warning: Cannot acl_get_file_at: No such file or directory",
+		// 檔案在讀取途中剛好短了一個位元組：單數。
+		"tar: big/f: File shrank by 1 byte; padding with zeros",
 		"tar: Exiting with failure status due to previous errors",
 	}
 	warnings, fatal := classifyTarStderr(lines)
-	if len(warnings) != 7 || len(fatal) != 0 {
+	if len(warnings) != 9 || len(fatal) != 0 {
 		t.Errorf("benign lines: %d warnings, fatal %q", len(warnings), fatal)
 	}
 	_, fatal = classifyTarStderr([]string{
@@ -186,6 +191,7 @@ func TestClassifyTarStderr(t *testing.T) {
 		// 查 ACL 或延伸屬性失敗，原因不是「檔案不見了」的，仍然是錯誤。
 		"tar: f64: Warning: Cannot file_has_acl_at: Input/output error",
 		"tar: f64: Warning: Cannot llistxattrat: Permission denied",
+		// 別的操作同樣以「No such file or directory」失敗的，也仍然是錯誤。
 		"tar: f64: Warning: Cannot seek to 4096: No such file or directory",
 	})
 	if len(fatal) != 7 {

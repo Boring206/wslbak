@@ -93,13 +93,15 @@ var (
 		regexp.MustCompile(`: file changed as we read it$`),
 		regexp.MustCompile(`: File removed before we read it$`),
 		regexp.MustCompile(`: Cannot (stat|open): No such file or directory$`),
-		// 檔案在 tar 看過它之後才被刪掉：它照樣進了封存（有內容的從已經打開的檔案讀，空檔不必讀），
+		// 檔案在 tar 看過它之後才被刪掉或改名：它照樣進了封存（有內容的從已經打開的檔案讀，空檔不必讀），
 		// 只是接著用路徑去查 ACL 與延伸屬性時找不到它。tar 自己標成 Warning。
-		// file_has_acl_at 與 llistxattrat 兩種是在 tar 1.35 上實際看到的（收到這種警告的 30 個檔案
-		// 都在封存裡）；其餘三個是 tar 同一段程式裡同樣用路徑查的呼叫。
+		// file_has_acl_at、acl_get_file_at、llistxattrat 三種是在 tar 1.35 上實際看到的（收到這種警告的
+		// 30 個被刪掉的檔案都在封存裡；被改名的檔案也在，用的是舊名字，沒有帶到它的 ACL）；其餘兩個是
+		// tar 同一段程式裡同樣用路徑查的呼叫。
 		// 只認「No such file or directory」：其他原因（例如讀取錯誤）照樣算錯誤。
 		regexp.MustCompile(`: Warning: Cannot (file_has_acl_at|acl_get_file_at|llistxattrat|lgetxattrat|lgetfileconat): No such file or directory$`),
-		regexp.MustCompile(`: File shrank by \d+ bytes; padding with zeros$`),
+		// 只短了一個位元組時 tar 用單數：「File shrank by 1 byte」。
+		regexp.MustCompile(`: File shrank by \d+ bytes?; padding with zeros$`),
 		// root 也讀不了的只有沒開 allow_root 的 FUSE 掛載點，那裡本來就不在這個檔案系統上。
 		regexp.MustCompile(`: Cannot stat: Permission denied$`),
 	}
