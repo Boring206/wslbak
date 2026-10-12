@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.1
+
+Corrections to what the npm launcher says inside WSL when Windows programs cannot be started.
+Nothing else changes.
+
+- The message no longer points at `[interop] enabled=false` in `/etc/wsl.conf`. That setting does
+  not lead to this message: the kernel setting the launcher looks at stays in place, and WSL itself
+  prints an error after about ten seconds (tried with WSL 2.7.13). The README now describes that
+  case in its own entry.
+- The command the message prints puts back a setting that is missing. For one that is switched off
+  it does nothing, and the message now says so; `wsl --shutdown` restores it in either case.
+
 ## 0.2.0
 
 Differential backups: a full backup now and then, and in between only what changed since it. They

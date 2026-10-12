@@ -576,11 +576,16 @@ Start with `wslbak doctor`.
   `wsl -d <distro> -u root sh -c "echo ':WSLInterop:M::MZ::/init:P' > /proc/sys/fs/binfmt_misc/register"`.
   (Without `-d` the command runs in the default distro. If that one is not running, it is started
   and stops again, which can clear the setting once more.)
-- **"cannot start Windows programs right now" inside WSL.** wslbak looks for the kernel setting
-  that hands `.exe` files to Windows before it starts its program, and did not find it. If Windows
-  programs worked a moment ago, it is the case above, and the same command puts the setting back. If
-  they never did, interop is disabled: check `[interop]` in `/etc/wsl.conf`, or use wslbak from
-  Windows instead.
+- **"cannot start Windows programs right now" inside WSL.** wslbak looks at the kernel setting
+  that hands `.exe` files to Windows before it starts its program, and it is missing or switched
+  off. A missing one is the case above, and the same command puts it back; `wsl --shutdown`
+  restores it in either case.
+- **Inside WSL, one line of error from WSL after about ten seconds, and nothing else.** This is what
+  happens when Windows interop is switched off for the distro (`[interop] enabled=false` in
+  `/etc/wsl.conf`). WSL itself then fails to start any Windows program and prints its own error. With
+  WSL 2.7.13 that was `ERROR: UtilAcceptVsock:273: accept4 failed 110` after ten seconds, with exit
+  code 1, which is WSL's own and not one of wslbak's. Switch interop back on, or use wslbak from
+  Windows.
 - **In Git Bash, `--path`, `--into` and `files <path>` are refused as Windows paths.** Git Bash
   rewrites arguments that look like Linux paths (`/home/me` becomes `C:/Program Files/Git/home/me`)
   before wslbak sees them; wslbak notices and says so. Put `MSYS_NO_PATHCONV=1` in front of the
