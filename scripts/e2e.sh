@@ -76,7 +76,10 @@ mutate() {
 }
 # Everything in the sandbox, the list of distros and whether the task exists, as one text.
 snapshot() {
-	(cd "$SANDBOX" 2>/dev/null && find . -printf '%p %s\n' | sort)
+	# A distro's own disk file is listed without its size. WSL writes to it when it pleases:
+	# once the file of a distro imported a moment earlier was 160 MiB larger after an init
+	# that had been declined, and that says nothing about what wslbak did.
+	(cd "$SANDBOX" 2>/dev/null && find . -name ext4.vhdx -printf '%p\n' -o -printf '%p %s\n' | sort)
 	distro_names
 	task_exists && echo "task: present" || echo "task: absent"
 }
@@ -762,15 +765,19 @@ fi
 section "13i. The program is frozen in the middle of a backup, as when the PC sleeps"
 # A PC that goes to sleep stops the program where it is and lets it go on later; for the
 # program, time has jumped. Here its process is frozen for 40 seconds half-way through a
-# backup that is slowed down so that it lasts long enough. "No data for 8 seconds" counts
+# backup that is slowed down so that it lasts long enough. "No data for 20 seconds" counts
 # as stalled in this run, so a program that mistook its own pause for a stall would give up.
+# That limit also covers the time before the first data arrives, so the distro is started
+# first: on two runners a backup that had to start WSL as well was given up within the 8
+# seconds this test used to allow, before it could be frozen.
 if fast; then
 	skip "freezing the program (E2E_FAST)"
 elif [ ! -f bin/e2e-console.exe ]; then
 	skip "bin/e2e-console.exe is missing (npm run build makes it)"
 else
 	ensure_interop
-	env WSLBAK_TEST_STALL_SECONDS=8 WSLBAK_TEST_READ_MIB_PER_SECOND=4 WSLENV="${WSLENV:+$WSLENV:}WSLBAK_TEST_STALL_SECONDS:WSLBAK_TEST_READ_MIB_PER_SECOND" \
+	sh_in "$DISTRO" true >/dev/null
+	env WSLBAK_TEST_STALL_SECONDS=20 WSLBAK_TEST_READ_MIB_PER_SECOND=4 WSLENV="${WSLENV:+$WSLENV:}WSLBAK_TEST_STALL_SECONDS:WSLBAK_TEST_READ_MIB_PER_SECOND" \
 		timeout 900 "${WB[@]}" run --no-verify >"$SANDBOX/frozen.log" 2>&1 </dev/null &
 	FROZEN_PID=$!
 	for _ in $(seq 1 300); do

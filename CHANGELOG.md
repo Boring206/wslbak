@@ -2,9 +2,16 @@
 
 ## 0.2.1
 
-Corrections to what the npm launcher says inside WSL when Windows programs cannot be started.
-Nothing else changes.
+One correction to backups of a distro in which files are being deleted, and corrections to what
+the npm launcher says inside WSL when Windows programs cannot be started.
 
+- A backup failed with "tar reported an error" when a file was deleted in the instant after tar
+  had taken it up: tar then cannot look up its access control list and extended attributes by
+  name, and says `Warning: Cannot file_has_acl_at: No such file or directory` (or `llistxattrat`).
+  The file is in the archive all the same. wslbak took these lines for errors; a file that
+  disappears an instant earlier was already accepted as normal on a running system, and so are
+  these now. It is rare: of about 150 runs of the tests that create and delete files during a
+  backup, one met it. Every earlier version has the same gap.
 - The message named `[interop] enabled=false` in `/etc/wsl.conf` as the thing to check when
   Windows programs never worked. That is the cause in a WSL 1 distro only, and the message now says
   so. In a WSL 2 distro that setting does not lead to this message: the kernel setting the launcher
@@ -101,8 +108,8 @@ runs a command (`--version`, `--help` and `--dry-run` do not do it).
   says that the backup passed its test restore. `wslbak status` says "test restore or check" when
   a differential only got the lighter check, and `run --dry-run` says that the differential would
   be read back and checked.
-- Inside WSL, when Windows programs cannot be started (interop switched off, or its kernel setting
-  removed by another distro that shut down), the npm launcher now says so and how to put it back.
+- Inside WSL, when the kernel setting that hands `.exe` files to Windows is missing or switched off
+  (another distro that shuts down can remove it), the npm launcher now says so and how to put it back.
   On most distros it printed the shell's complaints about the bytes of the executable instead.
 - The message about a settings file from a newer version is now in both languages and says what to
   do, and a scheduled run that cannot load its settings leaves a line in the log.

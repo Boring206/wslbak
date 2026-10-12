@@ -168,10 +168,14 @@ func TestClassifyTarStderr(t *testing.T) {
 		"tar: ./var/lib/app/tmp123: Cannot stat: No such file or directory",
 		"tar: ./home/user/db.sqlite-wal: File shrank by 4096 bytes; padding with zeros",
 		"tar: ./home/user/mnt: Cannot stat: Permission denied",
+		// 這兩行是 GNU tar 1.35 實際印出來的（一邊建立、刪除檔案，一邊用 --acls --xattrs 打包）：
+		// 檔案在打開之後被刪掉，tar 只印檔名，不帶路徑。
+		"tar: f64: Warning: Cannot file_has_acl_at: No such file or directory",
+		"tar: f64: Warning: Cannot llistxattrat: No such file or directory",
 		"tar: Exiting with failure status due to previous errors",
 	}
 	warnings, fatal := classifyTarStderr(lines)
-	if len(warnings) != 5 || len(fatal) != 0 {
+	if len(warnings) != 7 || len(fatal) != 0 {
 		t.Errorf("benign lines: %d warnings, fatal %q", len(warnings), fatal)
 	}
 	_, fatal = classifyTarStderr([]string{
@@ -179,8 +183,12 @@ func TestClassifyTarStderr(t *testing.T) {
 		"tar: ./etc/shadow: Cannot open: Permission denied",
 		"tar: unrecognized option '--acls'",
 		"something that is not from tar at all",
+		// 查 ACL 或延伸屬性失敗，原因不是「檔案不見了」的，仍然是錯誤。
+		"tar: f64: Warning: Cannot file_has_acl_at: Input/output error",
+		"tar: f64: Warning: Cannot llistxattrat: Permission denied",
+		"tar: f64: Warning: Cannot seek to 4096: No such file or directory",
 	})
-	if len(fatal) != 4 {
+	if len(fatal) != 7 {
 		t.Errorf("real errors: fatal = %q", fatal)
 	}
 
