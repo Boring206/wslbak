@@ -95,7 +95,7 @@ jobs:
           'Defender reacted to the test file.'
       # The test script runs inside WSL and starts the Windows executables from there,
       # as a user would. This distro only hosts the script; the tests create their own.
-      - uses: Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364 # v7.0.0
+      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
         with:
           distribution: Debian-13
           wsl-version: 2
