@@ -2,7 +2,8 @@
 
 ## 0.2.2
 
-Built with Go 1.26.10, for a correction to the certificate check of the webhook notification.
+Built with Go 1.26.10, for a correction to the certificate check of the webhook notification, and
+with newer versions of the two compression libraries.
 
 - `--webhook` sends its message over HTTPS. Go 1.26.10 holds a list of intermediate certificates
   that are no longer to be trusted and refuses a connection whose certificate chain goes through
@@ -14,6 +15,9 @@ Built with Go 1.26.10, for a correction to the certificate check of the webhook 
 - The compression library klauspost/compress is at 1.20.3 (was 1.20.1). Its changes are in parts
   wslbak does not use (zstd, s2, zip); the code that writes and reads the `.tar.gz` files is the
   same.
+- klauspost/pgzip, which compresses the backup on several cores, is at 1.3.0 (was 1.2.7). Of its
+  changes, one reaches wslbak: when finishing the file fails (a full destination, for instance),
+  it now also stops its own background work. The compressed data it writes is the same.
 
 ## 0.2.1
 
