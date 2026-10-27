@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.2
+
+Built with Go 1.26.10, for a correction to the certificate check of the webhook notification.
+
+- `--webhook` sends its message over HTTPS. Go 1.26.10 holds a list of intermediate certificates
+  that are no longer to be trusted and refuses a connection whose certificate chain goes through
+  one of them ([GO-2026-6809](https://pkg.go.dev/vuln/GO-2026-6809)); every earlier version of
+  wslbak was built with a Go that has no such list. The advisory calls the cases it matters for
+  narrow: on most systems the system's own certificate store decides, and the list is for a store
+  that has not been brought up to date. The webhook is the only connection wslbak makes; backups
+  and restores do not touch the network.
+- The compression library klauspost/compress is at 1.20.3 (was 1.20.1). Its changes are in parts
+  wslbak does not use (zstd, s2, zip); the code that writes and reads the `.tar.gz` files is the
+  same.
+
 ## 0.2.1
 
 Two corrections to backups of a distro in which files are deleted, renamed or shortened while the
